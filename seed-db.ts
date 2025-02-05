@@ -23,7 +23,7 @@ try {
     await mongoClient.db("admin").command({ ping: 1 });
     console.log("Pinged your deployment. You successfully connected to MongoDB!");
     const db = mongoClient.db("AI-Travel-Agent");
-    const collection = db.collection("employees");
+    const collection = db.collection("places");
     await collection.deleteMany({});
     
     const syntheticData = await generateSyntheticData(parser, llm);
