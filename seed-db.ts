@@ -6,8 +6,8 @@ import { z } from "zod";
 import llmOuputSchema, { LLMOutput } from "./schemas/llmOutput";
 import { generateSyntheticData } from "./utils/generateSyntheticData";
 import { createItinerarySummary } from "./utils/createItinerarySummary";
-
-const mongoClient = new MongoClient(process.env.MONGO_URL as string)
+import 'dotenv/config'
+const mongoClient = new MongoClient(process.env.MONGODB_ATLAS_URI as string)
 
 const llm = new ChatOpenAI({
   model: 'gpt-4o-mini',
@@ -54,3 +54,5 @@ try {
     await mongoClient.close();
   }
 }
+
+seedDB().catch(err => console.error(err))
