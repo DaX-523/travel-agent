@@ -1,8 +1,14 @@
 import { Annotation, StateGraph } from "@langchain/langgraph";
-import { ToolNode } from "@langchain/langgraph/prebuilt";
+import { ToolNode, toolsCondition } from "@langchain/langgraph/prebuilt";
 import { OpenAIEmbeddings, ChatOpenAI } from "@langchain/openai";
 import { MongoClient } from "mongodb";
-import { AIMessage, BaseMessage, HumanMessage } from "@langchain/core/messages";
+import {
+  AIMessage,
+  BaseMessage,
+  HumanMessage,
+  trimMessages,
+  SystemMessage,
+} from "@langchain/core/messages";
 import {
   ChatPromptTemplate,
   MessagesPlaceholder,
@@ -12,6 +18,7 @@ import { MongoDBAtlasVectorSearch } from "@langchain/mongodb";
 import { z } from "zod";
 import { ChatAnthropic } from "@langchain/anthropic";
 import { MongoDBSaver } from "@langchain/langgraph-checkpoint-mongodb";
+import { CohereEmbeddings } from "@langchain/cohere";
 
 export default async function callAgent(
   client: MongoClient,
@@ -40,10 +47,11 @@ export default async function callAgent(
         };
 
         const vectorStore = new MongoDBAtlasVectorSearch(
-          new OpenAIEmbeddings(),
+          new CohereEmbeddings({ model: "embed-english-v3.0" }),
           dbConfig
         );
         const result = await vectorStore.similaritySearchWithScore(query, n);
+
         return JSON.stringify(result);
       },
       {
@@ -65,7 +73,7 @@ export default async function callAgent(
     const chatModel = new ChatOpenAI({
       model: "gpt-4o-mini",
       temperature: 0.7,
-    }).bindTools(tools);
+    }).bindTools(tools, { parallel_tool_calls: false });
 
     async function callModel(state: typeof GraphState.State) {
       const prompt = ChatPromptTemplate.fromMessages([
@@ -75,15 +83,37 @@ export default async function callAgent(
         ],
         new MessagesPlaceholder("messages"),
       ]);
+      const summarizedMessages = await summarizeMessages(state.messages);
+      const trimmedPrompt = await trimMessages(summarizedMessages, {
+        maxTokens: 200,
+        tokenCounter: new ChatOpenAI({ model: "gpt-4o-mini" }),
+        strategy: "last",
+        includeSystem: true,
+      });
       const formattedPrompt = await prompt.formatMessages({
         system_message: "You are a helpful Travel Agent.",
         time: new Date().toISOString(),
         tool_names: tools.map((tool) => tool.name).join(", "),
-        messages: state.messages,
+        messages: trimmedPrompt,
       });
+      console.log(formattedPrompt);
       const result = await chatModel.invoke(formattedPrompt);
       return { messages: [result] };
     }
+    async function summarizeMessages(messages: BaseMessage[]) {
+      if (messages.length <= 3) return messages;
+      const summary = await chatModel.invoke(
+        `Summarize the key points of this conversation in under 75 words: ${messages
+          .slice(0, -2)
+          .map((m) => m.content)
+          .join("\n")}`
+      );
+      return [
+        new SystemMessage(summary.content.toString()),
+        ...messages.slice(-2),
+      ];
+    }
+    //raw toolsCondition
     function shouldContinue(state: typeof GraphState.State): string {
       const messages = state.messages;
       const lastMessage = messages[messages.length - 1] as AIMessage;
