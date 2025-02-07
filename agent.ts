@@ -2,13 +2,7 @@ import { Annotation, StateGraph } from "@langchain/langgraph";
 import { ToolNode, toolsCondition } from "@langchain/langgraph/prebuilt";
 import { OpenAIEmbeddings, ChatOpenAI } from "@langchain/openai";
 import { MongoClient } from "mongodb";
-import {
-  AIMessage,
-  BaseMessage,
-  HumanMessage,
-  trimMessages,
-  SystemMessage,
-} from "@langchain/core/messages";
+import { AIMessage, BaseMessage, HumanMessage } from "@langchain/core/messages";
 import {
   ChatPromptTemplate,
   MessagesPlaceholder,
@@ -73,50 +67,31 @@ export default async function callAgent(
     const chatModel = new ChatOpenAI({
       model: "gpt-4o-mini",
       temperature: 0.7,
-    }).bindTools(tools, { parallel_tool_calls: false });
+    }).bindTools(tools);
 
     async function callModel(state: typeof GraphState.State) {
       const prompt = ChatPromptTemplate.fromMessages([
         [
           "system",
-          `You are a helpful AI assistant, collaborating with other assistants. Use the provided tools to progress towards answering the question. If you are unable to fully answer, that's OK, another assistant with different tools will help where you left off. Execute what you can to make progress. If you or any of the other assistants have the final answer or deliverable, prefix your response with FINAL ANSWER so the team knows to stop. You have access to the following tools: {tool_names}.\n{system_message}\nCurrent time: {time}.`,
+          `You are a helpful AI assistant, collaborating with other assistants. Use the provided tools to progress towards answering the question. If you are unable to fully answer, that's OK, another assistant with different tools will help where you left off. Execute what you can to make progress. If you or any of the other assistants have the final answer or deliverable, prefix your response with FINAL ANSWER so the team knows to stop. If no relevant locations are found in the database, clearly inform the user instead of making assumptions. You have access to the following tools: {tool_names}.\n{system_message}\nCurrent time: {time}.`,
         ],
         new MessagesPlaceholder("messages"),
       ]);
-      const summarizedMessages = await summarizeMessages(state.messages);
-      const trimmedPrompt = await trimMessages(summarizedMessages, {
-        maxTokens: 200,
-        tokenCounter: new ChatOpenAI({ model: "gpt-4o-mini" }),
-        strategy: "last",
-        includeSystem: true,
-      });
+
       const formattedPrompt = await prompt.formatMessages({
         system_message: "You are a helpful Travel Agent.",
         time: new Date().toISOString(),
         tool_names: tools.map((tool) => tool.name).join(", "),
-        messages: trimmedPrompt,
+        messages: state.messages,
       });
-      console.log(formattedPrompt);
       const result = await chatModel.invoke(formattedPrompt);
       return { messages: [result] };
-    }
-    async function summarizeMessages(messages: BaseMessage[]) {
-      if (messages.length <= 3) return messages;
-      const summary = await chatModel.invoke(
-        `Summarize the key points of this conversation in under 75 words: ${messages
-          .slice(0, -2)
-          .map((m) => m.content)
-          .join("\n")}`
-      );
-      return [
-        new SystemMessage(summary.content.toString()),
-        ...messages.slice(-2),
-      ];
     }
     //raw toolsCondition
     function shouldContinue(state: typeof GraphState.State): string {
       const messages = state.messages;
       const lastMessage = messages[messages.length - 1] as AIMessage;
+
       if (
         lastMessage &&
         lastMessage.tool_calls &&
