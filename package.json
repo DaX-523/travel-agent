@@ -25,9 +25,13 @@
   "dependencies": {
     "@langchain/anthropic": "^0.3.12",
     "@langchain/cohere": "^0.3.2",
+    "@langchain/community": "^0.3.29",
     "@langchain/langgraph": "^0.2.44",
     "@langchain/langgraph-checkpoint-mongodb": "^0.0.5",
     "@langchain/mongodb": "^0.1.0",
+    "@langchain/pinecone": "^0.2.0",
+    "@pinecone-database/pinecone": "^5.1.1",
+    "csv-parser": "^3.2.0",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "langchain": "^0.3.15",

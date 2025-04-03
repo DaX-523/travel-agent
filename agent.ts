@@ -2,6 +2,7 @@ import { Annotation, StateGraph } from "@langchain/langgraph";
 import { ToolNode, toolsCondition } from "@langchain/langgraph/prebuilt";
 import { OpenAIEmbeddings, ChatOpenAI } from "@langchain/openai";
 import { MongoClient } from "mongodb";
+import { Document } from "@langchain/core/documents";
 import { AIMessage, BaseMessage, HumanMessage } from "@langchain/core/messages";
 import {
   ChatPromptTemplate,
@@ -10,14 +11,17 @@ import {
 import { tool } from "@langchain/core/tools";
 import { MongoDBAtlasVectorSearch } from "@langchain/mongodb";
 import { z } from "zod";
-import { ChatAnthropic } from "@langchain/anthropic";
 import { MongoDBSaver } from "@langchain/langgraph-checkpoint-mongodb";
 import { CohereEmbeddings } from "@langchain/cohere";
+import { RunnableConfig } from "@langchain/core/runnables";
+import { formatDocs, getMessageText } from "./utils/util";
+import { ensureConfiguration, loadChatModel } from "./utils/configuration";
+import { makeRetriever } from "./utils/retrieval";
 
 export default async function callAgent(
   client: MongoClient,
   query: string,
-  thread_id: string
+  threadId: string
 ) {
   try {
     const db = client.db("AI-Travel-Agent");
@@ -28,8 +32,18 @@ export default async function callAgent(
           if (Array.isArray(right)) return left.concat(right);
           return left.concat([right]);
         },
+        default: () => [],
       }),
+      queries: Annotation<string[], string | string[]>({
+        reducer: (left: string[], right: string | string[]) => {
+          if (Array.isArray(right)) return left.concat(right);
+          return left.concat([right]);
+        },
+        default: () => [],
+      }),
+      retrievedDocs: Annotation<Document[]>,
     });
+
     const lookupTool = tool(
       async ({ query, n = 10 }) => {
         console.log("Lookup Tool");
@@ -61,13 +75,83 @@ export default async function callAgent(
         }),
       }
     );
-    const tools = [lookupTool];
+    const searchTool = tool(async () => {}, {
+      name: "search_tool",
+      description: "Tool for lookup in web.",
+    });
+    const tools = [lookupTool, searchTool];
     const toolNode = new ToolNode<typeof GraphState.State>(tools);
 
     const chatModel = new ChatOpenAI({
-      model: "gpt-4o-mini",
+      model: "gpt-4o",
       temperature: 0.7,
     }).bindTools(tools);
+    const SearchQuery = z.object({
+      query: z.string().describe("Search the indexed documents for a query."),
+    });
+    async function generateQuery(
+      state: typeof GraphState.State,
+      config?: RunnableConfig
+    ): Promise<typeof GraphState.Update> {
+      const messages = state.messages;
+      if (messages.length === 1) {
+        const humanInput = getMessageText(messages[messages.length - 1]);
+        return {
+          queries: [humanInput],
+        };
+      } else {
+        const configuration = ensureConfiguration(config);
+        // Feel free to customize the prompt, model, and other logic!
+        const systemMessage = configuration.querySystemPromptTemplate
+          .replace("{queries}", (state.queries || []).join("\n- "))
+          .replace("{systemTime}", new Date().toISOString());
+
+        const messageValue = [
+          { role: "system", content: systemMessage },
+          ...state.messages,
+        ];
+        const model = (
+          await loadChatModel(configuration.responseModel)
+        ).withStructuredOutput(SearchQuery);
+
+        const generated = await model.invoke(messageValue);
+        return {
+          queries: [generated.query],
+        };
+      }
+    }
+
+    async function retrieve(
+      state: typeof GraphState.State,
+      config: RunnableConfig
+    ): Promise<typeof GraphState.Update> {
+      const my_retriever = await makeRetriever(config);
+      const query = state.queries[state.queries.length - 1];
+      const docs = await my_retriever.invoke(query);
+      return { retrievedDocs: docs };
+    }
+
+    async function respond(
+      state: typeof GraphState.State,
+      config: RunnableConfig
+    ): Promise<typeof GraphState.Update> {
+      const configuration = ensureConfiguration(config);
+
+      const model = await loadChatModel(configuration.responseModel);
+
+      const retrievedDocs = formatDocs(state.retrievedDocs);
+      // Feel free to customize the prompt, model, and other logic!
+      const systemMessage = configuration.responseSystemPromptTemplate
+        .replace("{retrievedDocs}", retrievedDocs)
+        .replace("{systemTime}", new Date().toISOString());
+      const messageValue = [
+        { role: "system", content: systemMessage },
+        ...state.messages,
+      ];
+      const response = await model.invoke(messageValue);
+      // We return a list, because this will get added to the existing list
+      return { messages: [response] };
+    }
 
     async function callModel(state: typeof GraphState.State) {
       const prompt = ChatPromptTemplate.fromMessages([
@@ -102,24 +186,31 @@ export default async function callAgent(
     }
 
     const workflow = new StateGraph(GraphState)
-      .addNode("agent", callModel)
-      .addNode("tools", toolNode)
-      .addEdge("__start__", "agent")
-      .addConditionalEdges("agent", shouldContinue)
-      .addEdge("tools", "agent");
+      .addNode("generateQuery", generateQuery)
+      .addNode("retrieve", retrieve)
+      .addNode("respond", respond)
+      .addEdge("__start__", "generateQuery")
+      .addEdge("generateQuery", "retrieve")
+      .addEdge("retrieve", "respond");
 
     const checkpointer = new MongoDBSaver({
       client,
       dbName: "AI-Travel-Agent",
     });
-    const app = workflow.compile({ checkpointer });
+    const app = workflow.compile({
+      checkpointer,
+      interruptBefore: [],
+      interruptAfter: [],
+    });
+    app.name = "Travel Agent";
     const finalState = await app.invoke(
       {
         messages: [new HumanMessage(query)],
+        queries: [query],
       },
       {
         recursionLimit: 15,
-        configurable: { thread_id },
+        configurable: { threadId },
       }
     );
     console.log(finalState.messages[finalState.messages.length - 1].content);
