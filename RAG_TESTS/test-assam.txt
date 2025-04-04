@@ -1,0 +1,23 @@
+Creating retriever...
+Using configuration: {
+  threadId: 'test-thread',
+  embeddingModel: 'cohere/embed-english-v3.0',
+  retrieverProvider: 'pinecone',
+  searchKwargs: { k: 10 },
+  responseSystemPromptTemplate: "You are a helpful AI assistant. Answer the user's questions based on the retrieved documents.\n" +
+    '\n' +
+    '{retrievedDocs}\n' +
+    '\n' +
+    'System time: {systemTime}',
+  responseModel: 'openai/gpt-4o',
+  querySystemPromptTemplate: "Generate search queries to retrieve documents that may help answer the user's question. Previously, you made the following queries:\n" +
+    '    \n' +
+    '<previous_queries/>\n' +
+    '{queries}\n' +
+    '</previous_queries>\n' +
+    '\n' +
+    'System time: {systemTime}',
+  queryModel: 'openai/gpt-4o'
+}
+Initializing Pinecone
+Checking index stats

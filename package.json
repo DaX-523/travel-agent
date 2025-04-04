@@ -5,6 +5,7 @@
   "main": "index.ts",
   "scripts": {
     "seed": "npx ts-node seed-db.ts",
+    "dev": "npx tsc -b && node dist/index.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [
@@ -17,7 +18,7 @@
   "author": "Daksh Dhama",
   "license": "ISC",
   "devDependencies": {
-    "@types/express": "^5.0.0",
+    "@types/express": "^4.17.21",
     "@types/node": "^22.13.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.7.3"

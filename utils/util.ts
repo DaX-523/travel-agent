@@ -3,11 +3,13 @@ import { Document } from "@langchain/core/documents";
 
 export function getMessageText(msg: BaseMessage): string {
   /** Get the text content of a message. */
+  console.log(msg);
   const content = msg.content;
   if (typeof content === "string") {
     return content;
   } else {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    console.log(content);
     const txts = (content as any[]).map((c) =>
       typeof c === "string" ? c : c.text || ""
     );

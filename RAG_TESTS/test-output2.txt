@@ -1,0 +1,103 @@
+[2025-04-04T19:12:48.649Z] [at Object.<anonymous> (/home/dax/travel-agent/test-agent-retriever.js:16:9)] Node.js version: v22.13.1
+[2025-04-04T19:12:48.652Z] [at Object.<anonymous> (/home/dax/travel-agent/test-agent-retriever.js:17:9)] Current directory: /home/dax/travel-agent
+[2025-04-04T19:12:48.652Z] [at Object.<anonymous> (/home/dax/travel-agent/test-agent-retriever.js:18:9)] Script path: /home/dax/travel-agent/test-agent-retriever.js
+[2025-04-04T19:12:48.653Z] [at Object.<anonymous> (/home/dax/travel-agent/test-agent-retriever.js:19:9)] Environment variables:
+[2025-04-04T19:12:48.653Z] [at Object.<anonymous> (/home/dax/travel-agent/test-agent-retriever.js:20:9)] - PINECONE_INDEX_NAME: destinations
+[2025-04-04T19:12:48.653Z] [at Object.<anonymous> (/home/dax/travel-agent/test-agent-retriever.js:21:9)] - PINECONE_API_KEY exists: true
+[2025-04-04T19:12:48.653Z] [at Object.<anonymous> (/home/dax/travel-agent/test-agent-retriever.js:22:9)] - COHERE_API_KEY exists: true
+[2025-04-04T19:12:48.654Z] [at Object.<anonymous> (/home/dax/travel-agent/test-agent-retriever.js:25:9)] Resolving retrieval module path...
+[2025-04-04T19:12:48.655Z] [at Object.<anonymous> (/home/dax/travel-agent/test-agent-retriever.js:28:11)] Module path dist: /home/dax/travel-agent/dist/utils/retrieval.js
+[2025-04-04T19:12:48.656Z] [at Object.<anonymous> (/home/dax/travel-agent/test-agent-retriever.js:29:11)] Module exists: true
+[2025-04-04T19:12:48.657Z] [at Object.<anonymous> (/home/dax/travel-agent/test-agent-retriever.js:37:11)] Requiring retrieval module...
+[2025-04-04T19:12:50.316Z] [at Object.<anonymous> (/home/dax/travel-agent/test-agent-retriever.js:39:11)] Module exports: [ 'makeRetriever' ]
+[2025-04-04T19:12:50.316Z] [at Object.<anonymous> (/home/dax/travel-agent/test-agent-retriever.js:41:11)] makeRetriever loaded: true
+[2025-04-04T19:12:50.316Z] [at Object.<anonymous> (/home/dax/travel-agent/test-agent-retriever.js:84:9)] Starting test retriever script...
+[2025-04-04T19:12:50.317Z] [at testRetriever (/home/dax/travel-agent/test-agent-retriever.js:49:13)] Testing retriever...
+[2025-04-04T19:12:50.317Z] [at /home/dax/travel-agent/dist/utils/retrieval.js:121:17] Using configuration: {
+  threadId: 'test-thread',
+  embeddingModel: 'cohere/embed-english-v3.0',
+  retrieverProvider: 'pinecone',
+  searchKwargs: { k: 3 },
+  responseSystemPromptTemplate: "You are a helpful AI assistant. Answer the user's questions based on the retrieved documents.\n" +
+    '\n' +
+    '{retrievedDocs}\n' +
+    '\n' +
+    'System time: {systemTime}',
+  responseModel: 'openai/gpt-4o',
+  querySystemPromptTemplate: "Generate search queries to retrieve documents that may help answer the user's question. Previously, you made the following queries:\n" +
+    '    \n' +
+    '<previous_queries/>\n' +
+    '{queries}\n' +
+    '</previous_queries>\n' +
+    '\n' +
+    'System time: {systemTime}',
+  queryModel: 'openai/gpt-4o'
+}
+[2025-04-04T19:12:50.319Z] [at /home/dax/travel-agent/dist/utils/retrieval.js:28:21] Initializing Pinecone
+[2025-04-04T19:12:50.327Z] [at /home/dax/travel-agent/dist/utils/retrieval.js:36:21] Checking index stats
+[2025-04-04T19:12:53.116Z] [at /home/dax/travel-agent/dist/utils/retrieval.js:38:21] Stats: {
+  namespaces: { places: { recordCount: 325 } },
+  dimension: 1024,
+  indexFullness: 0,
+  totalRecordCount: 325
+}
+[2025-04-04T19:12:53.117Z] [at /home/dax/travel-agent/dist/utils/retrieval.js:40:21] Creating embeddings model
+[2025-04-04T19:12:53.119Z] [at /home/dax/travel-agent/dist/utils/retrieval.js:45:21] Creating PineconeStore
+[2025-04-04T19:12:53.120Z] [at /home/dax/travel-agent/dist/utils/retrieval.js:52:21] Creating retriever
+[2025-04-04T19:12:53.123Z] [at testRetriever (/home/dax/travel-agent/test-agent-retriever.js:58:13)] Retriever created: VectorStoreRetriever {
+  lc_serializable: false,
+  lc_kwargs: {
+    vectorStore: [PineconeStore],
+    k: 3,
+    filter: undefined,
+    tags: [Array],
+    metadata: undefined,
+    verbose: undefined,
+    callbacks: undefined,
+    searchType: undefined
+  },
+  lc_runnable: true,
+  name: undefined,
+  callbacks: undefined,
+  tags: [ 'pinecone' ],
+  metadata: {},
+  verbose: false,
+  vectorStore: PineconeStore {
+    lc_serializable: false,
+    lc_kwargs: [Object],
+    lc_namespace: [Array],
+    embeddings: [CohereEmbeddings],
+    textKey: 'text',
+    namespace: 'places',
+    pineconeIndex: [Index],
+    filter: undefined,
+    caller: [AsyncCaller]
+  },
+  k: 3,
+  searchType: 'similarity',
+  searchKwargs: undefined,
+  filter: undefined
+}
+[2025-04-04T19:12:53.123Z] [at testRetriever (/home/dax/travel-agent/test-agent-retriever.js:62:13)] 
+Executing query: "tourist attractions in Delhi"
+[2025-04-04T19:12:53.124Z] [at testRetriever (/home/dax/travel-agent/test-agent-retriever.js:65:15)] Calling getRelevantDocuments...
+[2025-04-04T19:12:54.097Z] [at testRetriever (/home/dax/travel-agent/test-agent-retriever.js:67:15)] Found 3 results
+[2025-04-04T19:12:54.098Z] [at /home/dax/travel-agent/test-agent-retriever.js:70:17] 
+Result 1:
+[2025-04-04T19:12:54.098Z] [at /home/dax/travel-agent/test-agent-retriever.js:71:17] Name: undefined
+[2025-04-04T19:12:54.098Z] [at /home/dax/travel-agent/test-agent-retriever.js:72:17] Type: undefined
+[2025-04-04T19:12:54.099Z] [at /home/dax/travel-agent/test-agent-retriever.js:73:17] Location: undefined, undefined
+[2025-04-04T19:12:54.099Z] [at /home/dax/travel-agent/test-agent-retriever.js:74:17] Score: undefined
+[2025-04-04T19:12:54.099Z] [at /home/dax/travel-agent/test-agent-retriever.js:70:17] 
+Result 2:
+[2025-04-04T19:12:54.099Z] [at /home/dax/travel-agent/test-agent-retriever.js:71:17] Name: undefined
+[2025-04-04T19:12:54.099Z] [at /home/dax/travel-agent/test-agent-retriever.js:72:17] Type: undefined
+[2025-04-04T19:12:54.099Z] [at /home/dax/travel-agent/test-agent-retriever.js:73:17] Location: undefined, undefined
+[2025-04-04T19:12:54.099Z] [at /home/dax/travel-agent/test-agent-retriever.js:74:17] Score: undefined
+[2025-04-04T19:12:54.099Z] [at /home/dax/travel-agent/test-agent-retriever.js:70:17] 
+Result 3:
+[2025-04-04T19:12:54.099Z] [at /home/dax/travel-agent/test-agent-retriever.js:71:17] Name: undefined
+[2025-04-04T19:12:54.100Z] [at /home/dax/travel-agent/test-agent-retriever.js:72:17] Type: undefined
+[2025-04-04T19:12:54.100Z] [at /home/dax/travel-agent/test-agent-retriever.js:73:17] Location: undefined, undefined
+[2025-04-04T19:12:54.100Z] [at /home/dax/travel-agent/test-agent-retriever.js:74:17] Score: undefined
+[2025-04-04T19:12:54.100Z] [at /home/dax/travel-agent/test-agent-retriever.js:86:23] Test completed

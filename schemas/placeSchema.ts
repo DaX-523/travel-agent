@@ -8,10 +8,7 @@ export const PlaceSchema = z.object({
   Name: z.string().describe("Name of the place"),
   Type: z.string().describe("Type of establishment"),
   EstablishmentYear: z
-    .union([
-      z.number().int().max(new Date().getFullYear()),
-      z.literal("Unknown"),
-    ])
+    .union([z.number().int().max(new Date().getFullYear()), z.string()])
     .describe("Year when the place was established"),
   timeNeededToVisit: z
     .number()

@@ -24,6 +24,7 @@ export default async function callAgent(
   threadId: string
 ) {
   try {
+    console.log("query", query);
     const db = client.db("AI-Travel-Agent");
     const collection = db.collection("places");
     const GraphState = Annotation.Root({
@@ -128,6 +129,7 @@ export default async function callAgent(
       const my_retriever = await makeRetriever(config);
       const query = state.queries[state.queries.length - 1];
       const docs = await my_retriever.invoke(query);
+      console.log("docs", docs);
       return { retrievedDocs: docs };
     }
 
@@ -141,6 +143,7 @@ export default async function callAgent(
 
       const retrievedDocs = formatDocs(state.retrievedDocs);
       // Feel free to customize the prompt, model, and other logic!
+      console.log("docs2", retrievedDocs);
       const systemMessage = configuration.responseSystemPromptTemplate
         .replace("{retrievedDocs}", retrievedDocs)
         .replace("{systemTime}", new Date().toISOString());
@@ -205,12 +208,12 @@ export default async function callAgent(
     app.name = "Travel Agent";
     const finalState = await app.invoke(
       {
-        messages: [new HumanMessage(query)],
+        messages: [new HumanMessage({ content: query })],
         queries: [query],
       },
       {
         recursionLimit: 15,
-        configurable: { threadId },
+        configurable: { thread_id: threadId },
       }
     );
     console.log(finalState.messages[finalState.messages.length - 1].content);

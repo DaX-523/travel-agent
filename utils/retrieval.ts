@@ -8,9 +8,10 @@ import { VectorStoreRetriever } from "@langchain/core/vectorstores";
 import { PineconeStore } from "@langchain/pinecone";
 // import { MongoClient } from "mongodb";
 import { ensureConfiguration } from "./configuration";
-import { Pinecone as PineconeClient } from "@pinecone-database/pinecone";
+import { Pinecone } from "@pinecone-database/pinecone";
 import { Embeddings } from "@langchain/core/embeddings";
 import { CohereEmbeddings } from "@langchain/cohere";
+import { Document } from "@langchain/core/documents";
 // import { OpenAIEmbeddings } from "@langchain/openai";
 
 // retriever for elastic search
@@ -61,27 +62,245 @@ import { CohereEmbeddings } from "@langchain/cohere";
 //   return vectorStore.asRetriever({ filter });
 // }
 
-async function makePineconeRetriever(
-  configuration: ReturnType<typeof ensureConfiguration>,
-  embeddingModel: Embeddings
-): Promise<VectorStoreRetriever> {
-  const indexName = process.env.PINECONE_INDEX_NAME;
-  if (!indexName) {
-    throw new Error("PINECONE_INDEX_NAME environment variable is not defined");
-  }
-  const pinecone = new PineconeClient();
-  const pineconeIndex = pinecone.Index(indexName!);
-  const vectorStore = await PineconeStore.fromExistingIndex(embeddingModel, {
-    pineconeIndex,
-  });
+/**
+ * Interface for a retriever that can be used as a fallback
+ */
+interface SimpleRetriever {
+  getRelevantDocuments(query: string): Promise<Document[]>;
+  invoke(query: string): Promise<Document[]>;
+}
 
-  const searchKwargs = configuration.searchKwargs || {};
-  const filter = {
-    ...searchKwargs,
-    threadId: configuration.threadId,
+/**
+ * Type definitions for Pinecone API responses
+ */
+interface PineconeMatch {
+  id: string;
+  score?: number;
+  metadata?: Record<string, any>;
+  values?: number[];
+}
+
+interface PineconeResponse {
+  matches?: PineconeMatch[];
+  namespace?: string;
+  usage?: {
+    readUnits?: number;
+  };
+}
+
+/**
+ * Extract state name from a query if present
+ * For example "places to visit in Assam" would return "Assam"
+ */
+function extractStateFromQuery(query: string): string | null {
+  // List of Indian states to check for
+  const indianStates = [
+    "Andhra Pradesh",
+    "Arunachal Pradesh",
+    "Assam",
+    "Bihar",
+    "Chhattisgarh",
+    "Goa",
+    "Gujarat",
+    "Haryana",
+    "Himachal Pradesh",
+    "Jharkhand",
+    "Karnataka",
+    "Kerala",
+    "Madhya Pradesh",
+    "Maharashtra",
+    "Manipur",
+    "Meghalaya",
+    "Mizoram",
+    "Nagaland",
+    "Odisha",
+    "Punjab",
+    "Rajasthan",
+    "Sikkim",
+    "Tamil Nadu",
+    "Telangana",
+    "Tripura",
+    "Uttar Pradesh",
+    "Uttarakhand",
+    "West Bengal",
+    "Delhi",
+    "Jammu and Kashmir",
+    "Ladakh",
+    "Andaman and Nicobar Islands",
+    "Chandigarh",
+    "Dadra and Nagar Haveli and Daman and Diu",
+    "Lakshadweep",
+    "Puducherry",
+  ];
+
+  // Check if any state is mentioned in the query
+  for (const state of indianStates) {
+    if (query.toLowerCase().includes(state.toLowerCase())) {
+      return state;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Convert metadata to standardized format with lowercase field names
+ */
+function convertMetadata(metadata: Record<string, any>): Record<string, any> {
+  const result: Record<string, any> = { ...metadata };
+
+  // Add lowercase versions of capitalized fields
+  const fieldMap: Record<string, string> = {
+    Name: "name",
+    Type: "type",
+    City: "city",
+    State: "state",
+    Zone: "zone",
   };
 
-  return vectorStore.asRetriever({ filter });
+  for (const [capitalField, lowercaseField] of Object.entries(fieldMap)) {
+    if (metadata[capitalField] !== undefined) {
+      result[lowercaseField] = metadata[capitalField];
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Creates a retriever that uses Pinecone for vector search
+ * This implementation uses filters for state-specific queries
+ */
+async function makePineconeRetriever(
+  configuration: ReturnType<typeof ensureConfiguration>
+): Promise<SimpleRetriever> {
+  try {
+    // Initialize Pinecone
+    console.log("Initializing Pinecone");
+    const pinecone = new Pinecone();
+    const indexName = process.env.PINECONE_INDEX_NAME;
+    if (!indexName) {
+      throw new Error(
+        "PINECONE_INDEX_NAME environment variable is not defined"
+      );
+    }
+    const index = pinecone.index(indexName);
+
+    // Check stats first
+    console.log("Checking index stats");
+    const stats = await index.describeIndexStats();
+    console.log("Stats:", stats);
+
+    // Create embeddings model
+    console.log("Creating Cohere embeddings model");
+    const embeddings = new CohereEmbeddings({
+      model: "embed-english-v3.0",
+    });
+
+    // Get namespace
+    const places = index.namespace("places");
+
+    // Create PineconeStore for fallback
+    console.log("Creating PineconeStore for fallback");
+    const vectorStore = await PineconeStore.fromExistingIndex(embeddings, {
+      pineconeIndex: index,
+      namespace: "places",
+      textKey: "text",
+    });
+
+    // Create retriever
+    console.log("Creating smart retriever with state filtering capabilities");
+    const searchKwargs = configuration.searchKwargs || {};
+    const k = searchKwargs.k || 10;
+
+    // Define getRelevantDocuments function
+    const getRelevantDocuments = async (query: string): Promise<Document[]> => {
+      console.log(`Querying with: "${query}"`);
+
+      try {
+        // Check if there's a state mentioned in the query
+        const state = extractStateFromQuery(query);
+        if (state) {
+          console.log(`Detected state in query: "${state}"`);
+
+          try {
+            // Generate vector embedding for the query
+            const queryVector = await embeddings.embedQuery(query);
+
+            // Try to do a hybrid search with state filter
+            console.log(`Performing filtered search for state: "${state}"`);
+            const filterResults = await places.query({
+              vector: queryVector,
+              topK: k,
+              includeMetadata: true,
+              filter: {
+                State: { $eq: state },
+              },
+            });
+
+            if (filterResults.matches && filterResults.matches.length > 0) {
+              console.log(
+                `Found ${filterResults.matches.length} results with state filter`
+              );
+
+              // Convert to Document format
+              return filterResults.matches.map((match) => {
+                const metadata = match.metadata || {};
+                return new Document({
+                  pageContent: (metadata.text as string) || "",
+                  metadata: {
+                    id: match.id,
+                    score: match.score,
+                    ...convertMetadata(metadata),
+                  },
+                });
+              });
+            } else {
+              console.log(
+                `No results found with state filter "${state}", using fallback`
+              );
+            }
+          } catch (filterError) {
+            console.error("Error with filtered search:", filterError);
+          }
+        }
+      } catch (err) {
+        console.error("Error in state extraction:", err);
+      }
+
+      // If we didn't find results with filter, do regular search
+      console.log("Performing regular vector search as fallback");
+
+      // Create fallback retriever
+      const fallbackRetriever = vectorStore.asRetriever({ k });
+      const docs = await fallbackRetriever.getRelevantDocuments(query);
+
+      // Convert metadata formats
+      return docs.map((doc) => {
+        return new Document({
+          pageContent: doc.pageContent,
+          metadata: convertMetadata(doc.metadata),
+        });
+      });
+    };
+
+    // Return the retriever
+    return {
+      getRelevantDocuments,
+      invoke: async (query: string) => {
+        return getRelevantDocuments(query);
+      },
+    };
+  } catch (error) {
+    console.error("Error creating Pinecone retriever:", error);
+
+    // Create a dummy retriever that returns empty results
+    console.log("Using fallback empty retriever");
+    return {
+      getRelevantDocuments: async () => [],
+      invoke: async () => [],
+    };
+  }
 }
 
 // retriever for mongodb vector search
@@ -110,28 +329,39 @@ async function makePineconeRetriever(
 //   return vectorStore.asRetriever({ filter: searchKwargs });
 // }
 
+/**
+ * Creates an embedding model based on the provided model name
+ * Format: provider/model or just model (defaults to Cohere)
+ */
 function makeTextEmbeddings(modelName: string): Embeddings {
-  /**
-   * Connect to the configured text encoder.
-   */
   const index = modelName.indexOf("/");
-  let provider, model;
-  if (index === -1)
-    throw new Error(`Unsupported embedding provider: ${provider}`);
 
-  return new CohereEmbeddings({ model });
-}
-
-export async function makeRetriever(
-  config: RunnableConfig
-): Promise<VectorStoreRetriever> {
-  const configuration = ensureConfiguration(config);
-  const embeddingModel = makeTextEmbeddings(configuration.embeddingModel);
-
-  const threadId = configuration.threadId;
-  if (!threadId) {
-    throw new Error("Please provide a valid threadId in the configuration.");
+  // If there's no slash, use the modelName as is
+  if (index === -1) {
+    return new CohereEmbeddings({ model: "embed-english-v3.0" });
   }
 
-  return makePineconeRetriever(configuration, embeddingModel);
+  // Otherwise, extract provider and model
+  const provider = modelName.slice(0, index);
+  const model = modelName.slice(index + 1);
+
+  // For now, we only support Cohere embeddings
+  if (provider.toLowerCase() === "cohere") {
+    return new CohereEmbeddings({ model });
+  }
+
+  // Default to Cohere's english embedding model
+  return new CohereEmbeddings({ model: "embed-english-v3.0" });
+}
+
+/**
+ * Create a retriever based on the configuration
+ */
+export async function makeRetriever(
+  config: RunnableConfig
+): Promise<SimpleRetriever> {
+  const configuration = ensureConfiguration(config);
+  console.log("Using configuration:", configuration);
+
+  return makePineconeRetriever(configuration);
 }

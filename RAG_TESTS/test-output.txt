@@ -1,0 +1,81 @@
+[2025-04-04T19:25:18.709Z] [at Object.<anonymous> (/home/dax/travel-agent/test-agent-retriever.js:16:9)] Node.js version: v22.13.1
+[2025-04-04T19:25:18.711Z] [at Object.<anonymous> (/home/dax/travel-agent/test-agent-retriever.js:17:9)] Current directory: /home/dax/travel-agent
+[2025-04-04T19:25:18.711Z] [at Object.<anonymous> (/home/dax/travel-agent/test-agent-retriever.js:18:9)] Script path: /home/dax/travel-agent/test-agent-retriever.js
+[2025-04-04T19:25:18.711Z] [at Object.<anonymous> (/home/dax/travel-agent/test-agent-retriever.js:19:9)] Environment variables:
+[2025-04-04T19:25:18.711Z] [at Object.<anonymous> (/home/dax/travel-agent/test-agent-retriever.js:20:9)] - PINECONE_INDEX_NAME: destinations
+[2025-04-04T19:25:18.711Z] [at Object.<anonymous> (/home/dax/travel-agent/test-agent-retriever.js:21:9)] - PINECONE_API_KEY exists: true
+[2025-04-04T19:25:18.712Z] [at Object.<anonymous> (/home/dax/travel-agent/test-agent-retriever.js:22:9)] - COHERE_API_KEY exists: true
+[2025-04-04T19:25:18.712Z] [at Object.<anonymous> (/home/dax/travel-agent/test-agent-retriever.js:25:9)] Resolving retrieval module path...
+[2025-04-04T19:25:18.712Z] [at Object.<anonymous> (/home/dax/travel-agent/test-agent-retriever.js:28:11)] Module path dist: /home/dax/travel-agent/dist/utils/retrieval.js
+[2025-04-04T19:25:18.713Z] [at Object.<anonymous> (/home/dax/travel-agent/test-agent-retriever.js:29:11)] Module exists: true
+[2025-04-04T19:25:18.713Z] [at Object.<anonymous> (/home/dax/travel-agent/test-agent-retriever.js:37:11)] Requiring retrieval module...
+[2025-04-04T19:25:19.406Z] [at Object.<anonymous> (/home/dax/travel-agent/test-agent-retriever.js:39:11)] Module exports: [ 'makeRetriever' ]
+[2025-04-04T19:25:19.406Z] [at Object.<anonymous> (/home/dax/travel-agent/test-agent-retriever.js:41:11)] makeRetriever loaded: true
+[2025-04-04T19:25:19.407Z] [at Object.<anonymous> (/home/dax/travel-agent/test-agent-retriever.js:95:9)] Starting test retriever script...
+[2025-04-04T19:25:19.407Z] [at testRetriever (/home/dax/travel-agent/test-agent-retriever.js:49:13)] Testing retriever...
+[2025-04-04T19:25:19.408Z] [at /home/dax/travel-agent/dist/utils/retrieval.js:165:17] Using configuration: {
+  threadId: 'test-thread',
+  embeddingModel: 'cohere/embed-english-v3.0',
+  retrieverProvider: 'pinecone',
+  searchKwargs: { k: 3 },
+  responseSystemPromptTemplate: "You are a helpful AI assistant. Answer the user's questions based on the retrieved documents.\n" +
+    '\n' +
+    '{retrievedDocs}\n' +
+    '\n' +
+    'System time: {systemTime}',
+  responseModel: 'openai/gpt-4o',
+  querySystemPromptTemplate: "Generate search queries to retrieve documents that may help answer the user's question. Previously, you made the following queries:\n" +
+    '    \n' +
+    '<previous_queries/>\n' +
+    '{queries}\n' +
+    '</previous_queries>\n' +
+    '\n' +
+    'System time: {systemTime}',
+  queryModel: 'openai/gpt-4o'
+}
+[2025-04-04T19:25:19.409Z] [at /home/dax/travel-agent/dist/utils/retrieval.js:58:21] Initializing Pinecone
+[2025-04-04T19:25:19.411Z] [at /home/dax/travel-agent/dist/utils/retrieval.js:66:21] Checking index stats
+[2025-04-04T19:25:21.304Z] [at /home/dax/travel-agent/dist/utils/retrieval.js:68:21] Stats: {
+  namespaces: { places: { recordCount: 325 } },
+  dimension: 1024,
+  indexFullness: 0,
+  totalRecordCount: 325
+}
+[2025-04-04T19:25:21.304Z] [at /home/dax/travel-agent/dist/utils/retrieval.js:70:21] Creating embeddings model
+[2025-04-04T19:25:21.305Z] [at /home/dax/travel-agent/dist/utils/retrieval.js:75:21] Creating PineconeStore
+[2025-04-04T19:25:21.305Z] [at /home/dax/travel-agent/dist/utils/retrieval.js:82:21] Creating retriever with metadata normalization
+[2025-04-04T19:25:21.306Z] [at testRetriever (/home/dax/travel-agent/test-agent-retriever.js:58:13)] Retriever created: {
+  getRelevantDocuments: [Function: getRelevantDocuments],
+  invoke: [Function: invoke]
+}
+[2025-04-04T19:25:21.306Z] [at testRetriever (/home/dax/travel-agent/test-agent-retriever.js:62:13)] 
+Executing query: "tourist attractions in Delhi"
+[2025-04-04T19:25:21.306Z] [at testRetriever (/home/dax/travel-agent/test-agent-retriever.js:65:15)] Calling getRelevantDocuments...
+[2025-04-04T19:25:21.306Z] [at /home/dax/travel-agent/dist/utils/retrieval.js:90:29] Querying with: "tourist attractions in Delhi"
+[2025-04-04T19:25:21.928Z] [at /home/dax/travel-agent/dist/utils/retrieval.js:92:29] Found 3 documents
+[2025-04-04T19:25:21.929Z] [at testRetriever (/home/dax/travel-agent/test-agent-retriever.js:67:15)] Found 3 results
+[2025-04-04T19:25:21.929Z] [at /home/dax/travel-agent/test-agent-retriever.js:70:17] 
+Result 1:
+[2025-04-04T19:25:21.930Z] [at /home/dax/travel-agent/test-agent-retriever.js:73:17] Name: Kamakhya Temple
+[2025-04-04T19:25:21.930Z] [at /home/dax/travel-agent/test-agent-retriever.js:74:17] Type: Temple
+[2025-04-04T19:25:21.930Z] [at /home/dax/travel-agent/test-agent-retriever.js:75:17] Location: Guwahati, Assam
+[2025-04-04T19:25:21.930Z] [at /home/dax/travel-agent/test-agent-retriever.js:78:17] Has score property: false
+[2025-04-04T19:25:21.930Z] [at /home/dax/travel-agent/test-agent-retriever.js:84:17] Metadata keys: 20
+[2025-04-04T19:25:21.930Z] [at /home/dax/travel-agent/test-agent-retriever.js:85:17] First 5 keys: [ 'City', 'EstablishmentYear', 'Name', 'Significance', 'State' ]
+[2025-04-04T19:25:21.930Z] [at /home/dax/travel-agent/test-agent-retriever.js:70:17] 
+Result 2:
+[2025-04-04T19:25:21.930Z] [at /home/dax/travel-agent/test-agent-retriever.js:73:17] Name: Baba Harbhajan Singh Temple
+[2025-04-04T19:25:21.930Z] [at /home/dax/travel-agent/test-agent-retriever.js:74:17] Type: Temple
+[2025-04-04T19:25:21.930Z] [at /home/dax/travel-agent/test-agent-retriever.js:75:17] Location: Gangtok, Sikkim
+[2025-04-04T19:25:21.931Z] [at /home/dax/travel-agent/test-agent-retriever.js:78:17] Has score property: false
+[2025-04-04T19:25:21.931Z] [at /home/dax/travel-agent/test-agent-retriever.js:84:17] Metadata keys: 20
+[2025-04-04T19:25:21.931Z] [at /home/dax/travel-agent/test-agent-retriever.js:85:17] First 5 keys: [ 'City', 'EstablishmentYear', 'Name', 'Significance', 'State' ]
+[2025-04-04T19:25:21.931Z] [at /home/dax/travel-agent/test-agent-retriever.js:70:17] 
+Result 3:
+[2025-04-04T19:25:21.931Z] [at /home/dax/travel-agent/test-agent-retriever.js:73:17] Name: Mahakaleshwar Jyotirlinga
+[2025-04-04T19:25:21.931Z] [at /home/dax/travel-agent/test-agent-retriever.js:74:17] Type: Temple
+[2025-04-04T19:25:21.931Z] [at /home/dax/travel-agent/test-agent-retriever.js:75:17] Location: Ujjain, Madhya Pradesh
+[2025-04-04T19:25:21.931Z] [at /home/dax/travel-agent/test-agent-retriever.js:78:17] Has score property: false
+[2025-04-04T19:25:21.931Z] [at /home/dax/travel-agent/test-agent-retriever.js:84:17] Metadata keys: 20
+[2025-04-04T19:25:21.932Z] [at /home/dax/travel-agent/test-agent-retriever.js:85:17] First 5 keys: [ 'City', 'EstablishmentYear', 'Name', 'Significance', 'State' ]
+[2025-04-04T19:25:21.932Z] [at /home/dax/travel-agent/test-agent-retriever.js:97:23] Test completed

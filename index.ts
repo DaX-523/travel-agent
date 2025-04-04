@@ -1,9 +1,10 @@
 import "dotenv/config";
-import express, { Express, Request, Response } from "express";
+import express from "express";
+import { Request, Response } from "express";
 import { MongoClient } from "mongodb";
 import callAgent from "./agent";
 
-const app: Express = express();
+const app = express();
 app.use(express.json());
 
 // Initialize MongoDB client
@@ -24,6 +25,8 @@ async function startServer() {
     app.post("/chat", async (req: Request, res: Response) => {
       const initialMessage = req.body.message;
       const threadId = Date.now().toString();
+      if (!initialMessage)
+        return res.status(400).json({ message: "Error Bad Request" });
       try {
         const response = await callAgent(client, initialMessage, threadId);
         res.json({ threadId, response });
@@ -45,7 +48,7 @@ async function startServer() {
       }
     });
 
-    const PORT = process.env.PORT || 3000;
+    const PORT = process.env.PORT || 3001;
     app.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
     });
