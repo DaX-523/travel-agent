@@ -27,7 +27,7 @@ exports.IndexConfigurationAnnotation = langgraph_1.Annotation.Root({
     /**
      * Unique identifier for the user chat.
      */
-    threadId: (langgraph_1.Annotation),
+    thread_id: (langgraph_1.Annotation),
     /**
      * Name of the embedding model to use. Must be a valid embedding model name.
      */
@@ -51,7 +51,7 @@ exports.IndexConfigurationAnnotation = langgraph_1.Annotation.Root({
 function ensureIndexConfiguration(config = undefined) {
     const configurable = ((config === null || config === void 0 ? void 0 : config.configurable) || {});
     return {
-        threadId: configurable.threadId || Date.now().toString(), // Give a default user for shared docs
+        thread_id: configurable.thread_id || Date.now().toString(), // Give a default user for shared docs
         embeddingModel: configurable.embeddingModel || "cohere/embed-english-v3.0",
         retrieverProvider: configurable.retrieverProvider || "pinecone",
         searchKwargs: configurable.searchKwargs || {},
@@ -76,7 +76,25 @@ exports.ConfigurationAnnotation = langgraph_1.Annotation.Root(Object.assign(Obje
     /**
      * The language model used for processing and refining queries. Should be in the form: provider/model-name.
      */
-    queryModel: (langgraph_1.Annotation) }));
+    queryModel: (langgraph_1.Annotation), 
+    /**
+     * The main prompt template to use for the agent's interactions.
+     *
+     * Expects two template literals: ${info} and ${topic}.
+     */
+    prompt: (langgraph_1.Annotation), 
+    /**
+     * The maximum number of search results to return for each search query.
+     */
+    maxSearchResults: (langgraph_1.Annotation), 
+    /**
+     * The maximum number of times the Info tool can be called during a single interaction.
+     */
+    maxInfoToolCalls: (langgraph_1.Annotation), 
+    /**
+     * The maximum number of interaction loops allowed before the agent terminates.
+     */
+    maxLoops: (langgraph_1.Annotation), thread_id: (langgraph_1.Annotation) }));
 /**
  * Create a typeof ConfigurationAnnotation.State instance from a RunnableConfig object.
  *
@@ -84,10 +102,11 @@ exports.ConfigurationAnnotation = langgraph_1.Annotation.Root(Object.assign(Obje
  * @returns An instance of typeof ConfigurationAnnotation.State with the specified configuration.
  */
 function ensureConfiguration(config = undefined) {
+    var _a, _b, _c, _d, _e;
     const indexConfig = ensureIndexConfiguration(config);
     const configurable = ((config === null || config === void 0 ? void 0 : config.configurable) || {});
     return Object.assign(Object.assign({}, indexConfig), { responseSystemPromptTemplate: configurable.responseSystemPromptTemplate ||
-            prompts_1.RESPONSE_SYSTEM_PROMPT_TEMPLATE, responseModel: configurable.responseModel || "openai/gpt-4o", querySystemPromptTemplate: configurable.querySystemPromptTemplate || prompts_1.QUERY_SYSTEM_PROMPT_TEMPLATE, queryModel: configurable.queryModel || "openai/gpt-4o" });
+            prompts_1.RESPONSE_SYSTEM_PROMPT_TEMPLATE, responseModel: configurable.responseModel || "openai/gpt-4o", querySystemPromptTemplate: configurable.querySystemPromptTemplate || prompts_1.QUERY_SYSTEM_PROMPT_TEMPLATE, queryModel: configurable.queryModel || "openai/gpt-4o", prompt: (_a = configurable.prompt) !== null && _a !== void 0 ? _a : prompts_1.MAIN_PROMPT, maxSearchResults: (_b = configurable.maxSearchResults) !== null && _b !== void 0 ? _b : 5, maxInfoToolCalls: (_c = configurable.maxInfoToolCalls) !== null && _c !== void 0 ? _c : 3, maxLoops: (_d = configurable.maxLoops) !== null && _d !== void 0 ? _d : 6, thread_id: (_e = configurable.thread_id) !== null && _e !== void 0 ? _e : Date.now().toString() });
 }
 /**
  * Load a chat model from a fully specified name.

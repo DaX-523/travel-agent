@@ -5,6 +5,7 @@ import { RunnableConfig } from "@langchain/core/runnables";
 import {
   RESPONSE_SYSTEM_PROMPT_TEMPLATE,
   QUERY_SYSTEM_PROMPT_TEMPLATE,
+  MAIN_PROMPT,
 } from "./prompts";
 import { Annotation } from "@langchain/langgraph";
 import { BaseChatModel } from "@langchain/core/language_models/chat_models";
@@ -21,7 +22,7 @@ export const IndexConfigurationAnnotation = Annotation.Root({
   /**
    * Unique identifier for the user chat.
    */
-  threadId: Annotation<string>,
+  thread_id: Annotation<string>,
 
   /**
    * Name of the embedding model to use. Must be a valid embedding model name.
@@ -53,7 +54,7 @@ export function ensureIndexConfiguration(
     typeof IndexConfigurationAnnotation.State
   >;
   return {
-    threadId: configurable.threadId || Date.now().toString(), // Give a default user for shared docs
+    thread_id: configurable.thread_id || Date.now().toString(), // Give a default user for shared docs
     embeddingModel: configurable.embeddingModel || "cohere/embed-english-v3.0",
     retrieverProvider: configurable.retrieverProvider || "pinecone",
     searchKwargs: configurable.searchKwargs || {},
@@ -84,6 +85,29 @@ export const ConfigurationAnnotation = Annotation.Root({
    * The language model used for processing and refining queries. Should be in the form: provider/model-name.
    */
   queryModel: Annotation<string>,
+  /**
+   * The main prompt template to use for the agent's interactions.
+   *
+   * Expects two template literals: ${info} and ${topic}.
+   */
+  prompt: Annotation<string>,
+
+  /**
+   * The maximum number of search results to return for each search query.
+   */
+  maxSearchResults: Annotation<number>,
+
+  /**
+   * The maximum number of times the Info tool can be called during a single interaction.
+   */
+  maxInfoToolCalls: Annotation<number>,
+
+  /**
+   * The maximum number of interaction loops allowed before the agent terminates.
+   */
+  maxLoops: Annotation<number>,
+
+  thread_id: Annotation<string>,
 });
 
 /**
@@ -109,6 +133,11 @@ export function ensureConfiguration(
     querySystemPromptTemplate:
       configurable.querySystemPromptTemplate || QUERY_SYSTEM_PROMPT_TEMPLATE,
     queryModel: configurable.queryModel || "openai/gpt-4o",
+    prompt: configurable.prompt ?? MAIN_PROMPT,
+    maxSearchResults: configurable.maxSearchResults ?? 5,
+    maxInfoToolCalls: configurable.maxInfoToolCalls ?? 3,
+    maxLoops: configurable.maxLoops ?? 6,
+    thread_id: configurable.thread_id ?? Date.now().toString(),
   };
 }
 

@@ -361,7 +361,7 @@ export async function makeRetriever(
   config: RunnableConfig
 ): Promise<SimpleRetriever> {
   const configuration = ensureConfiguration(config);
-  console.log("Using configuration:", configuration);
+  // console.log("Using configuration:", configuration);
 
   return makePineconeRetriever(configuration);
 }

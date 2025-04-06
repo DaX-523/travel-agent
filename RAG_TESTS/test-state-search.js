@@ -1,5 +1,5 @@
 require("dotenv").config();
-const { makeRetriever } = require("./dist/utils/retrieval");
+const { makeRetriever } = require("../dist/utils/retrieval");
 
 async function testStateSearch() {
   try {
