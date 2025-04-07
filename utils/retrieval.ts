@@ -273,7 +273,7 @@ async function makePineconeRetriever(
 
       // Create fallback retriever
       const fallbackRetriever = vectorStore.asRetriever({ k });
-      const docs = await fallbackRetriever.getRelevantDocuments(query);
+      const docs = await fallbackRetriever.invoke(query); //  HERE
 
       // Convert metadata formats
       return docs.map((doc) => {

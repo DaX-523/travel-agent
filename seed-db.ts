@@ -7,9 +7,9 @@ import { MongoDBAtlasVectorSearch } from "@langchain/mongodb";
 import { z } from "zod";
 import fs from "fs";
 import csv from "csv-parser";
-import llmOuputSchema, { LLMOutput } from "./schemas/llmOutput";
-import { generateSyntheticData } from "./utils/generateSyntheticData";
-import { createItinerarySummary } from "./utils/createItinerarySummary";
+import llmOuputSchema, { LLMOutput } from "./v1/llmOutput";
+import { generateSyntheticData } from "./v1/generateSyntheticData";
+import { createItinerarySummary } from "./v1/createItinerarySummary";
 import "dotenv/config";
 import { ChatCohere, CohereEmbeddings } from "@langchain/cohere";
 import { Pinecone, RecordMetadata } from "@pinecone-database/pinecone";
@@ -38,7 +38,7 @@ export interface PineconeTextRecord {
   text: string; // Field for automatic embedding
   [key: string]: any; // Allow additional metadata fields
 }
-
+// seedDB() -> v1 code
 //Function to seed data in mongoDB Atlas vector
 async function seedDB(): Promise<void> {
   try {

@@ -1,23 +1,18 @@
 import { Annotation, StateGraph } from "@langchain/langgraph";
-import { ToolNode, toolsCondition } from "@langchain/langgraph/prebuilt";
-import { OpenAIEmbeddings, ChatOpenAI } from "@langchain/openai";
+
 import { MongoClient } from "mongodb";
-import { Document } from "@langchain/core/documents";
 import {
   AIMessage,
   BaseMessage,
   HumanMessage,
   ToolMessage,
 } from "@langchain/core/messages";
-import {
-  ChatPromptTemplate,
-  MessagesPlaceholder,
-} from "@langchain/core/prompts";
+
 import { tool } from "@langchain/core/tools";
-import { MongoDBAtlasVectorSearch } from "@langchain/mongodb";
+// import { MongoDBAtlasVectorSearch } from "@langchain/mongodb";
 import { z } from "zod";
 import { MongoDBSaver } from "@langchain/langgraph-checkpoint-mongodb";
-import { CohereEmbeddings } from "@langchain/cohere";
+// import { CohereEmbeddings } from "@langchain/cohere";
 import { RunnableConfig } from "@langchain/core/runnables";
 import { formatDocs, getMessageText, InfoIsSatisfactory } from "./utils/util";
 import {
@@ -38,6 +33,11 @@ import {
   RESPONSE_SYSTEM_PROMPT_TEMPLATE,
 } from "./utils/prompts";
 import "dotenv/config";
+import {
+  checker_prompt,
+  complexPatterns,
+  fallBackTemplate,
+} from "./utils/constants";
 
 export type AnyRecord = Record<string, any>;
 
@@ -169,12 +169,6 @@ async function reflect(
     ...state.messages.slice(0, -1),
   ];
 
-  const checker_prompt = `I am thinking of calling the info tool with the info below. \
-Is this good? Give your reasoning as well. \
-You can encourage the Assistant to look at specific URLs if that seems relevant, or do more searches.
-If you don't think it is good, you should be very specific about what could be improved.
-
-{presumed_info}`;
   const p1 = checker_prompt.replace(
     "{presumed_info}",
     JSON.stringify(presumedInfo ?? {}, null, 2)
@@ -221,7 +215,7 @@ If you don't think it is good, you should be very specific about what could be i
         if (scrapedContent.length >= 3) break; // Get content from up to 3 websites
       }
     }
-
+    console.log("[FLOW] Scraped content foound : ", scrapedContent);
     if (scrapedContent.length > 0) {
       // Extract location names from the scraped content
       const locationRegex =
@@ -277,22 +271,9 @@ If you don't think it is good, you should be very specific about what could be i
       } else {
         // Not enough specific locations found, use template format
         travelInfo = `Here are the top places to visit in ${destination}:
-
-1. **Major Cities**: Explore the urban centers with their unique architecture, museums, historical sites, and vibrant culture.
-
-2. **Natural Wonders**: Discover the breathtaking landscapes including mountains, beaches, forests, and national parks.
-
-3. **Historical Sites**: Visit ancient temples, colonial buildings, museums, and cultural landmarks throughout the region.
-
-4. **Local Experiences**: Immerse yourself in local culture through food tours, traditional performances, markets, and community-based tourism.
-
-5. **Outdoor Activities**: Enjoy hiking, water sports, wildlife watching, and adventure activities suited to the local geography.
-
-6. **Culinary Highlights**: Sample regional specialties, street food, and local delicacies that define the destination's cuisine.
-
-7. **Hidden Gems**: Explore off-the-beaten-path locations away from typical tourist crowds for a more authentic experience.
-
-8. **Practical Tips**: Consider visiting during the dry season, use local transportation options, and respect cultural customs during your travels.`;
+        
+        ${fallBackTemplate}
+`;
       }
 
       // Add source references
@@ -302,22 +283,9 @@ If you don't think it is good, you should be very specific about what could be i
       const query = state.topic;
       console.log("[FLOW] Creating generic formatted response for:", query);
       travelInfo = `Here are the top places to visit in ${query}:
-
-1. **Major Cities**: Explore the urban centers with their unique architecture, museums, historical sites, and vibrant culture.
-
-2. **Natural Wonders**: Discover the breathtaking landscapes including mountains, beaches, forests, and national parks.
-
-3. **Historical Sites**: Visit ancient temples, colonial buildings, museums, and cultural landmarks throughout the region.
-
-4. **Local Experiences**: Immerse yourself in local culture through food tours, traditional performances, markets, and community-based tourism.
-
-5. **Outdoor Activities**: Enjoy hiking, water sports, wildlife watching, and adventure activities suited to the local geography.
-
-6. **Culinary Highlights**: Sample regional specialties, street food, and local delicacies that define the destination's cuisine.
-
-7. **Hidden Gems**: Explore off-the-beaten-path locations away from typical tourist crowds for a more authentic experience.
-
-8. **Practical Tips**: Consider visiting during the dry season, use local transportation options, and respect cultural customs during your travels.`;
+      
+      ${fallBackTemplate}
+`;
     }
   }
 
@@ -443,26 +411,6 @@ function routeAfterQueryGen(
   const query = state.queries[state.queries.length - 1];
 
   // Simple detection of complex queries needing agent reasoning
-  const complexPatterns = [
-    /\bcompare\b/i,
-    /\bbest\b/i,
-    /\brecommend\b/i,
-    /\bplan\b/i,
-    /\bitinerary\b/i,
-    /\btrip\b/i,
-    /\bvisit\b/i,
-    /\bcustom\b/i,
-    /\bwhat should\b/i,
-    /\bhow can\b/i,
-    /\badvice\b/i,
-    /\bsuggestion\b/i,
-    /days?\sin\b/i,
-    /\bfamily\b/i,
-    /\bbudget\b/i,
-    /\boptions\b/i,
-    /\bhelp me\b/i,
-    /\bmultiple\b/i,
-  ];
 
   // If the query matches any complex pattern, route to agent
   if (complexPatterns.some((pattern) => pattern.test(query))) {
@@ -475,56 +423,20 @@ function routeAfterQueryGen(
   return "retrieve";
 }
 
-export default async function callAgent(
-  client: MongoClient,
-  query: string,
-  threadId: string
-) {
+export default async function callAgent(query: string, threadId: string) {
   try {
     // console.log("query", query);
     const db = client.db("AI-Travel-Agent");
     const collection = db.collection("places");
 
-    const lookupTool = tool(
-      async ({ query, n = 10 }) => {
-        console.log("Lookup Tool");
-        const dbConfig = {
-          collection,
-          indexName: "vector_index",
-          textKey: "embedding_text",
-          embeddingKey: "embedding",
-        };
-
-        const vectorStore = new MongoDBAtlasVectorSearch(
-          new CohereEmbeddings({ model: "embed-english-v3.0" }),
-          dbConfig
-        );
-        const result = await vectorStore.similaritySearchWithScore(query, n);
-
-        return JSON.stringify(result);
-      },
-      {
-        name: "places_lookup",
-        description: "Place to search for the agent for suitale search results",
-        schema: z.object({
-          query: z.string().describe("The Search Query"),
-          n: z
-            .number()
-            .optional()
-            .default(10)
-            .describe("Number of results to return"),
-        }),
-      }
-    );
-
     // Now using the searchTool from utils/tools.ts
-    const tools = [lookupTool, ...MODEL_TOOLS];
-    const toolNode1 = new ToolNode<typeof GraphState.State>(tools);
+    // const tools = [lookupTool, ...MODEL_TOOLS];
+    // const toolNode1 = new ToolNode<typeof GraphState.State>(tools);
 
-    const chatModel = new ChatOpenAI({
-      model: "gpt-4o",
-      temperature: 0.7,
-    }).bindTools(tools);
+    // const chatModel = new ChatOpenAI({
+    //   model: "gpt-4o",
+    //   temperature: 0.7,
+    // }).bindTools(tools);
     const SearchQuery = z.object({
       query: z.string().describe("Search the indexed documents for a query."),
     });
@@ -674,38 +586,6 @@ export default async function callAgent(
       return { messages: [response] };
     }
 
-    async function callModel(state: typeof GraphState.State) {
-      const prompt = ChatPromptTemplate.fromMessages([
-        [
-          "system",
-          `You are a helpful AI assistant, collaborating with other assistants. Use the provided tools to progress towards answering the question. If you are unable to fully answer, that's OK, another assistant with different tools will help where you left off. Execute what you can to make progress. If you or any of the other assistants have the final answer or deliverable, prefix your response with FINAL ANSWER so the team knows to stop. If no relevant locations are found in the database, clearly inform the user instead of making assumptions. You have access to the following tools: {tool_names}.\n{system_message}\nCurrent time: {time}.`,
-        ],
-        new MessagesPlaceholder("messages"),
-      ]);
-
-      const formattedPrompt = await prompt.formatMessages({
-        system_message: "You are a helpful Travel Agent.",
-        time: new Date().toISOString(),
-        tool_names: tools.map((tool) => tool.name).join(", "),
-        messages: state.messages,
-      });
-      const result = await chatModel.invoke(formattedPrompt);
-      return { messages: [result] };
-    }
-    //raw toolsCondition
-    function shouldContinue(state: typeof GraphState.State): string {
-      const messages = state.messages;
-      const lastMessage = messages[messages.length - 1] as AIMessage;
-
-      if (
-        lastMessage &&
-        lastMessage.tool_calls &&
-        lastMessage.tool_calls.length > 0
-      )
-        return "tools";
-      return "__end__";
-    }
-
     // Modify the routeAfterRetrieve function
     function routeAfterRetrieve(
       state: typeof GraphState.State
@@ -830,7 +710,7 @@ export async function getApp() {
     const dummyThreadId = "initialization-thread";
 
     // This will initialize the app variable
-    await callAgent(client, dummyQuery, dummyThreadId);
+    await callAgent(dummyQuery, dummyThreadId);
 
     console.log("[LANGGRAPH] App initialized successfully");
     return app;

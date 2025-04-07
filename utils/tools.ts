@@ -11,6 +11,7 @@ import {
   isBaseMessage,
   ToolMessage,
 } from "@langchain/core/messages";
+import { tavilyFallBack } from "./constants";
 
 function initializeTools(
   state?: typeof StateAnnotation.State,
@@ -183,23 +184,8 @@ function initializeTools(
         // Fallback to generic data if Tavily fails
         return `Here are the top places to visit in ${destination || query}:
 
-1. **Popular Cities**: Major urban centers with unique architecture, museums, historical sites, and vibrant local culture.
-
-2. **Natural Wonders**: Breathtaking landscapes including mountains, beaches, forests, and national parks.
-
-3. **Historical Sites**: Ancient temples, colonial buildings, museums, and cultural landmarks that showcase the region's rich history.
-
-4. **Local Experiences**: Immerse yourself in local culture through food tours, traditional performances, markets, and community-based tourism.
-
-5. **Outdoor Activities**: Hiking, water sports, wildlife watching, and adventure activities suited to the local geography.
-
-6. **Culinary Highlights**: Regional specialties, street food, and local delicacies that define the destination's cuisine.
-
-7. **Hidden Gems**: Off-the-beaten-path locations away from typical tourist crowds for a more authentic experience.
-
-8. **Practical Tips**: Consider visiting during the dry season, use local transportation options, and respect cultural customs during your travels.
-
-Based on web search results (search engine temporarily unavailable, using general travel information).`;
+        ${tavilyFallBack}
+`;
       }
     },
     {

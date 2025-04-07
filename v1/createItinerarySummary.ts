@@ -1,4 +1,5 @@
-import llmOuputSchema, { LLMOutput } from "../schemas/llmOutput";
+// v1 code
+import llmOuputSchema, { LLMOutput } from "./llmOutput";
 
 export async function createItinerarySummary(plan: LLMOutput): Promise<string> {
   return new Promise((resolve) => {

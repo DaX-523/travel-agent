@@ -1,4 +1,5 @@
-import { LLMOutput } from "../schemas/llmOutput";
+// v1 code
+import { LLMOutput } from "./llmOutput";
 
 export async function generateSyntheticData(
   parser: any,

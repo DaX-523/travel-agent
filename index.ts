@@ -28,7 +28,7 @@ async function startServer() {
       if (!initialMessage)
         return res.status(400).json({ message: "Error Bad Request" });
       try {
-        const response = await callAgent(client, initialMessage, threadId);
+        const response = await callAgent(initialMessage, threadId);
         res.json({ threadId, response });
       } catch (error) {
         console.error("Error starting conversation:", error);
@@ -40,7 +40,7 @@ async function startServer() {
       const { threadId } = req.params;
       const { message } = req.body;
       try {
-        const response = await callAgent(client, message, threadId);
+        const response = await callAgent(message, threadId);
         res.json({ response });
       } catch (error) {
         console.error("Error in chat:", error);
