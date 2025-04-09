@@ -10,22 +10,24 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.default = callAgent;
+exports.getApp = getApp;
 const langgraph_1 = require("@langchain/langgraph");
-const prebuilt_1 = require("@langchain/langgraph/prebuilt");
-const openai_1 = require("@langchain/openai");
+const mongodb_1 = require("mongodb");
 const messages_1 = require("@langchain/core/messages");
-const prompts_1 = require("@langchain/core/prompts");
 const tools_1 = require("@langchain/core/tools");
-const mongodb_1 = require("@langchain/mongodb");
+// import { MongoDBAtlasVectorSearch } from "@langchain/mongodb";
 const zod_1 = require("zod");
 const langgraph_checkpoint_mongodb_1 = require("@langchain/langgraph-checkpoint-mongodb");
-const cohere_1 = require("@langchain/cohere");
 const util_1 = require("./utils/util");
 const configuration_1 = require("./utils/configuration");
 const retrieval_1 = require("./utils/retrieval");
 const state_1 = require("./utils/state");
 const tools_2 = require("./utils/tools");
-const prompts_2 = require("./utils/prompts");
+const prompts_1 = require("./utils/prompts");
+require("dotenv/config");
+const constants_1 = require("./utils/constants");
+let app;
+const client = new mongodb_1.MongoClient(process.env.MONGODB_ATLAS_URI);
 function callAgentModel(state, config) {
     return __awaiter(this, void 0, void 0, function* () {
         var _a, _b, _c;
@@ -129,17 +131,11 @@ function reflect(state, config) {
             { role: "user", content: p },
             ...state.messages.slice(0, -1),
         ];
-        const checker_prompt = `I am thinking of calling the info tool with the info below. \
-Is this good? Give your reasoning as well. \
-You can encourage the Assistant to look at specific URLs if that seems relevant, or do more searches.
-If you don't think it is good, you should be very specific about what could be improved.
-
-{presumed_info}`;
-        const p1 = checker_prompt.replace("{presumed_info}", JSON.stringify(presumedInfo !== null && presumedInfo !== void 0 ? presumedInfo : {}, null, 2));
+        const p1 = constants_1.checker_prompt.replace("{presumed_info}", JSON.stringify(presumedInfo !== null && presumedInfo !== void 0 ? presumedInfo : {}, null, 2));
         messages.push({ role: "user", content: p1 });
         // Call the model
         const response = yield boundModel.invoke(messages);
-        console.log("reflect response", response, presumedInfo);
+        // console.log("reflect response", response, presumedInfo);
         // Find travel information in messages to include in the final response
         const messageHistory = state.messages;
         let travelInfo = "";
@@ -168,6 +164,7 @@ If you don't think it is good, you should be very specific about what could be i
                         break; // Get content from up to 3 websites
                 }
             }
+            console.log("[FLOW] Scraped content foound : ", scrapedContent);
             if (scrapedContent.length > 0) {
                 // Extract location names from the scraped content
                 const locationRegex = /\b([A-Z][a-z]+(?:\s[A-Z][a-z]+)*(?:\s(?:Islands?|Mountains?|National\s+Park|Beach|City))?)\b/g;
@@ -180,7 +177,7 @@ If you don't think it is good, you should be very specific about what could be i
                     }
                 }
                 // Remove duplicates and get top locations
-                locations = [...new Set(locations)].slice(0, 8);
+                locations = [...new Set(locations)].slice(0, 5);
                 // Create a formatted response based on the topic and extracted locations
                 const query = state.topic;
                 console.log("[FLOW] Creating formatted response from scraped content for:", query);
@@ -210,22 +207,9 @@ If you don't think it is good, you should be very specific about what could be i
                 else {
                     // Not enough specific locations found, use template format
                     travelInfo = `Here are the top places to visit in ${destination}:
-
-1. **Major Cities**: Explore the urban centers with their unique architecture, museums, historical sites, and vibrant culture.
-
-2. **Natural Wonders**: Discover the breathtaking landscapes including mountains, beaches, forests, and national parks.
-
-3. **Historical Sites**: Visit ancient temples, colonial buildings, museums, and cultural landmarks throughout the region.
-
-4. **Local Experiences**: Immerse yourself in local culture through food tours, traditional performances, markets, and community-based tourism.
-
-5. **Outdoor Activities**: Enjoy hiking, water sports, wildlife watching, and adventure activities suited to the local geography.
-
-6. **Culinary Highlights**: Sample regional specialties, street food, and local delicacies that define the destination's cuisine.
-
-7. **Hidden Gems**: Explore off-the-beaten-path locations away from typical tourist crowds for a more authentic experience.
-
-8. **Practical Tips**: Consider visiting during the dry season, use local transportation options, and respect cultural customs during your travels.`;
+        
+        ${constants_1.fallBackTemplate}
+`;
                 }
                 // Add source references
                 travelInfo += "Based on analyzed content from multiple travel websites.";
@@ -235,22 +219,9 @@ If you don't think it is good, you should be very specific about what could be i
                 const query = state.topic;
                 console.log("[FLOW] Creating generic formatted response for:", query);
                 travelInfo = `Here are the top places to visit in ${query}:
-
-1. **Kuala Lumpur**: Visit the iconic Petronas Twin Towers, explore Batu Caves, and experience the vibrant street food scene.
-
-2. **Penang**: Discover the UNESCO World Heritage site of George Town, with its colonial architecture, street art, and renowned cuisine.
-
-3. **Langkawi**: Enjoy beautiful beaches, take the cable car to Langkawi Sky Bridge, and explore mangrove forests.
-
-4. **Malacca**: Explore the historic center with its Portuguese, Dutch, and British colonial influences.
-
-5. **Borneo (Sabah & Sarawak)**: Experience incredible wildlife including orangutans, climb Mount Kinabalu, and explore the world's oldest rainforest.
-
-6. **Cameron Highlands**: Visit tea plantations, enjoy cooler temperatures, and trek through lush forests.
-
-7. **Perhentian Islands**: Relax on pristine beaches and enjoy world-class snorkeling and diving.
-
-8. **Taman Negara**: Explore one of the world's oldest rainforests with canopy walks, river cruises, and jungle treks.`;
+      
+      ${constants_1.fallBackTemplate}
+`;
             }
         }
         if (response.is_satisfactory && presumedInfo) {
@@ -353,28 +324,8 @@ function routeAfterChecker(state, config) {
 function routeAfterQueryGen(state) {
     const query = state.queries[state.queries.length - 1];
     // Simple detection of complex queries needing agent reasoning
-    const complexPatterns = [
-        /\bcompare\b/i,
-        /\bbest\b/i,
-        /\brecommend\b/i,
-        /\bplan\b/i,
-        /\bitinerary\b/i,
-        /\btrip\b/i,
-        /\bvisit\b/i,
-        /\bcustom\b/i,
-        /\bwhat should\b/i,
-        /\bhow can\b/i,
-        /\badvice\b/i,
-        /\bsuggestion\b/i,
-        /days?\sin\b/i,
-        /\bfamily\b/i,
-        /\bbudget\b/i,
-        /\boptions\b/i,
-        /\bhelp me\b/i,
-        /\bmultiple\b/i,
-    ];
     // If the query matches any complex pattern, route to agent
-    if (complexPatterns.some((pattern) => pattern.test(query))) {
+    if (constants_1.complexPatterns.some((pattern) => pattern.test(query))) {
         console.log("[FLOW] Complex query detected: Routing to callAgentModel");
         return "callAgentModel";
     }
@@ -382,242 +333,266 @@ function routeAfterQueryGen(state) {
     console.log("[FLOW] Simple factual query detected: Routing to retrieve");
     return "retrieve";
 }
-function callAgent(client, query, threadId) {
+function generateQuery(state, config) {
     return __awaiter(this, void 0, void 0, function* () {
-        try {
-            console.log("query", query);
-            const db = client.db("AI-Travel-Agent");
-            const collection = db.collection("places");
-            const lookupTool = (0, tools_1.tool)((_a) => __awaiter(this, [_a], void 0, function* ({ query, n = 10 }) {
-                console.log("Lookup Tool");
-                const dbConfig = {
-                    collection,
-                    indexName: "vector_index",
-                    textKey: "embedding_text",
-                    embeddingKey: "embedding",
-                };
-                const vectorStore = new mongodb_1.MongoDBAtlasVectorSearch(new cohere_1.CohereEmbeddings({ model: "embed-english-v3.0" }), dbConfig);
-                const result = yield vectorStore.similaritySearchWithScore(query, n);
-                return JSON.stringify(result);
-            }), {
-                name: "places_lookup",
-                description: "Place to search for the agent for suitale search results",
-                schema: zod_1.z.object({
-                    query: zod_1.z.string().describe("The Search Query"),
-                    n: zod_1.z
-                        .number()
-                        .optional()
-                        .default(10)
-                        .describe("Number of results to return"),
-                }),
-            });
-            // Now using the searchTool from utils/tools.ts
-            const tools = [lookupTool, ...tools_2.MODEL_TOOLS];
-            const toolNode1 = new prebuilt_1.ToolNode(tools);
-            const chatModel = new openai_1.ChatOpenAI({
-                model: "gpt-4o",
-                temperature: 0.7,
-            }).bindTools(tools);
+        console.log("[FLOW] Starting generateQuery node");
+        const messages = state.messages;
+        // console.log(messages, "messages");
+        if (messages.length === 1) {
+            const humanInput = (0, util_1.getMessageText)(messages[messages.length - 1]);
+            console.log(`[FLOW] First message, using direct input as query: "${humanInput.substring(0, 50)}${humanInput.length > 50 ? "..." : ""}"`);
+            return {
+                queries: [humanInput],
+            };
+        }
+        else {
+            const configuration = (0, configuration_1.ensureConfiguration)(config);
+            console.log("[FLOW] Generating refined search query from conversation");
             const SearchQuery = zod_1.z.object({
                 query: zod_1.z.string().describe("Search the indexed documents for a query."),
             });
-            function generateQuery(state, config) {
-                return __awaiter(this, void 0, void 0, function* () {
-                    console.log("[FLOW] Starting generateQuery node");
-                    const messages = state.messages;
-                    console.log(messages, "messages");
-                    if (messages.length === 1) {
-                        const humanInput = (0, util_1.getMessageText)(messages[messages.length - 1]);
-                        console.log(`[FLOW] First message, using direct input as query: "${humanInput.substring(0, 50)}${humanInput.length > 50 ? "..." : ""}"`);
-                        return {
-                            queries: [humanInput],
-                        };
-                    }
-                    else {
-                        const configuration = (0, configuration_1.ensureConfiguration)(config);
-                        console.log("[FLOW] Generating refined search query from conversation");
-                        // Feel free to customize the prompt, model, and other logic!
-                        const systemMessage = configuration.querySystemPromptTemplate
-                            .replace("{queries}", (state.queries || []).join("\n- "))
-                            .replace("{systemTime}", new Date().toISOString());
-                        const messageValue = [
-                            { role: "system", content: systemMessage },
-                            ...state.messages,
-                        ];
-                        const model = (yield (0, configuration_1.loadChatModel)(configuration.responseModel)).withStructuredOutput(SearchQuery);
-                        const generated = yield model.invoke(messageValue);
-                        console.log(`[FLOW] Generated query: "${generated.query}"`);
-                        return {
-                            queries: [generated.query],
-                        };
-                    }
-                });
-            }
-            function retrieve(state, config) {
-                return __awaiter(this, void 0, void 0, function* () {
-                    console.log("[FLOW] Starting retrieve node");
-                    const my_retriever = yield (0, retrieval_1.makeRetriever)(config);
-                    const query = state.queries[state.queries.length - 1];
-                    console.log(`[FLOW] Retrieving documents for query: "${query}"`);
-                    const docs = yield my_retriever.invoke(query);
-                    console.log(`[FLOW] Retrieved ${docs.length} documents`);
-                    // If no documents found, we should route to the agent to use web search
-                    if (docs.length === 0) {
-                        console.log("[FLOW] No documents found in the database, will use web search");
-                        // Add a message prompting the agent to use web search
-                        return {
-                            retrievedDocs: docs,
-                            messages: [
-                                new messages_1.HumanMessage({
-                                    content: `No information about "${query}" was found in our database. Please use the search_tool to find information about this on the web.`,
-                                }),
-                            ],
-                        };
-                    }
-                    return { retrievedDocs: docs };
-                });
-            }
-            function respond(state, config) {
-                return __awaiter(this, void 0, void 0, function* () {
-                    console.log("[FLOW] Starting respond node");
-                    const configuration = (0, configuration_1.ensureConfiguration)(config);
-                    // Get the query and check document relevance
-                    const query = state.queries[state.queries.length - 1];
-                    const retrievedDocs = (0, util_1.formatDocs)(state.retrievedDocs);
-                    // Check if documents contain relevant information about the query
-                    const containsQuery = query
-                        .toLowerCase()
-                        .split(" ")
-                        .filter((word) => word.length > 3 &&
-                        ![
-                            "what",
-                            "where",
-                            "when",
-                            "how",
-                            "this",
-                            "that",
-                            "with",
-                            "from",
-                            "about",
-                            "places",
-                            "place",
-                            "visit",
-                            "travel",
-                        ].includes(word));
-                    const isRelevant = state.retrievedDocs.length > 0 &&
-                        containsQuery.some((keyword) => retrievedDocs.toLowerCase().includes(keyword.toLowerCase()));
-                    console.log(`[FLOW] Query keywords: ${containsQuery.join(", ")}`);
-                    console.log(`[FLOW] Documents relevant to query: ${isRelevant}`);
-                    // If documents are not relevant, route to agent for web search
-                    if (!isRelevant) {
-                        console.log("[FLOW] Retrieved documents not relevant to query, routing to search tool");
-                        return {
-                            messages: [
-                                new messages_1.HumanMessage({
-                                    content: `The information in our database doesn't match what you're looking for regarding "${query}". Please use the search_tool to find this information on the web.`,
-                                }),
-                            ],
-                        };
-                    }
-                    const model = yield (0, configuration_1.loadChatModel)(configuration.responseModel);
-                    // Feel free to customize the prompt, model, and other logic!
-                    const systemMessage = configuration.responseSystemPromptTemplate
-                        .replace("{retrievedDocs}", retrievedDocs)
-                        .replace("{systemTime}", new Date().toISOString());
-                    const messageValue = [
-                        { role: "system", content: systemMessage },
-                        ...state.messages,
-                    ];
-                    const response = yield model.invoke(messageValue);
-                    console.log("[FLOW] Response generated successfully");
-                    // We return a list, because this will get added to the existing list
-                    return { messages: [response] };
-                });
-            }
-            function callModel(state) {
-                return __awaiter(this, void 0, void 0, function* () {
-                    const prompt = prompts_1.ChatPromptTemplate.fromMessages([
-                        [
-                            "system",
-                            `You are a helpful AI assistant, collaborating with other assistants. Use the provided tools to progress towards answering the question. If you are unable to fully answer, that's OK, another assistant with different tools will help where you left off. Execute what you can to make progress. If you or any of the other assistants have the final answer or deliverable, prefix your response with FINAL ANSWER so the team knows to stop. If no relevant locations are found in the database, clearly inform the user instead of making assumptions. You have access to the following tools: {tool_names}.\n{system_message}\nCurrent time: {time}.`,
-                        ],
-                        new prompts_1.MessagesPlaceholder("messages"),
-                    ]);
-                    const formattedPrompt = yield prompt.formatMessages({
-                        system_message: "You are a helpful Travel Agent.",
-                        time: new Date().toISOString(),
-                        tool_names: tools.map((tool) => tool.name).join(", "),
-                        messages: state.messages,
-                    });
-                    const result = yield chatModel.invoke(formattedPrompt);
-                    return { messages: [result] };
-                });
-            }
-            //raw toolsCondition
-            function shouldContinue(state) {
-                const messages = state.messages;
-                const lastMessage = messages[messages.length - 1];
-                if (lastMessage &&
-                    lastMessage.tool_calls &&
-                    lastMessage.tool_calls.length > 0)
-                    return "tools";
-                return "__end__";
-            }
-            // Modify the routeAfterRetrieve function
-            function routeAfterRetrieve(state) {
-                // If no documents were found, route to the agent to use web search
-                if (state.retrievedDocs.length === 0) {
-                    console.log("[FLOW] No documents found, routing to agent for web search");
-                    return "callAgentModel";
+            // Feel free to customize the prompt, model, and other logic!
+            const systemMessage = configuration.querySystemPromptTemplate
+                .replace("{queries}", (state.queries || []).join("\n- "))
+                .replace("{systemTime}", new Date().toISOString());
+            const messageValue = [
+                { role: "system", content: systemMessage },
+                ...state.messages,
+            ];
+            const model = (yield (0, configuration_1.loadChatModel)(configuration.responseModel)).withStructuredOutput(SearchQuery);
+            const generated = yield model.invoke(messageValue);
+            console.log(`[FLOW] Generated query: "${generated.query}"`);
+            return {
+                queries: [generated.query],
+            };
+        }
+    });
+}
+function retrieve(state, config) {
+    return __awaiter(this, void 0, void 0, function* () {
+        console.log("[FLOW] Starting retrieve node");
+        const my_retriever = yield (0, retrieval_1.makeRetriever)(config);
+        const query = state.queries[state.queries.length - 1];
+        console.log(`[FLOW] Retrieving documents for query: "${query}"`);
+        const docs = yield my_retriever.invoke(query);
+        console.log(`[FLOW] Retrieved ${docs.length} documents`);
+        // If no documents found, we should route to the agent to use web search
+        if (docs.length === 0) {
+            console.log("[FLOW] No documents found in the database, will use web search");
+            // Add a message prompting the agent to use web search
+            return {
+                retrievedDocs: docs,
+                messages: [
+                    new messages_1.HumanMessage({
+                        content: `No information about "${query}" was found in our database. Please use the search_tool to find information about this on the web.`,
+                    }),
+                ],
+            };
+        }
+        return { retrievedDocs: docs };
+    });
+}
+function respond(state, config) {
+    return __awaiter(this, void 0, void 0, function* () {
+        console.log("[FLOW] Starting respond node");
+        const configuration = (0, configuration_1.ensureConfiguration)(config);
+        // Get the query and check document relevance
+        const query = state.queries[state.queries.length - 1];
+        const retrievedDocs = (0, util_1.formatDocs)(state.retrievedDocs);
+        // Check if documents contain relevant information about the query
+        const containsQuery = query
+            .toLowerCase()
+            .split(" ")
+            .filter((word) => word.length > 3 &&
+            ![
+                "what",
+                "where",
+                "when",
+                "how",
+                "this",
+                "that",
+                "with",
+                "from",
+                "about",
+                "places",
+                "place",
+                "visit",
+                "travel",
+            ].includes(word));
+        const isRelevant = state.retrievedDocs.length > 0 &&
+            containsQuery.some((keyword) => retrievedDocs.toLowerCase().includes(keyword.toLowerCase()));
+        console.log(`[FLOW] Query keywords: ${containsQuery.join(", ")}`);
+        console.log(`[FLOW] Documents relevant to query: ${isRelevant}`);
+        // If documents are not relevant, route to agent for web search
+        if (!isRelevant) {
+            console.log("[FLOW] Retrieved documents not relevant to query, routing to search tool");
+            return {
+                messages: [
+                    new messages_1.HumanMessage({
+                        content: `The information in our database doesn't match what you're looking for regarding "${query}". Please use the search_tool to find this information on the web.`,
+                    }),
+                ],
+            };
+        }
+        const model = yield (0, configuration_1.loadChatModel)(configuration.responseModel);
+        // Feel free to customize the prompt, model, and other logic!
+        const systemMessage = configuration.responseSystemPromptTemplate
+            .replace("{retrievedDocs}", retrievedDocs)
+            .replace("{systemTime}", new Date().toISOString());
+        const messageValue = [
+            { role: "system", content: systemMessage },
+            ...state.messages,
+        ];
+        const response = yield model.invoke(messageValue);
+        console.log("[FLOW] Response generated successfully");
+        // We return a list, because this will get added to the existing list
+        return { messages: [response] };
+    });
+}
+// Modify the routeAfterRetrieve function
+function routeAfterRetrieve(state) {
+    // If no documents were found, route to the agent to use web search
+    if (state.retrievedDocs.length === 0) {
+        console.log("[FLOW] No documents found, routing to agent for web search");
+        return "callAgentModel";
+    }
+    console.log("[FLOW] Documents found, routing to respond");
+    return "respond";
+}
+// Add a function to route after respond
+function routeAfterRespond(state) {
+    // Get the last message
+    const lastMessage = state.messages[state.messages.length - 1];
+    // If the last message is asking to use search_tool, route to callAgentModel
+    if (lastMessage._getType() === "human" &&
+        typeof lastMessage.content === "string" &&
+        lastMessage.content.includes("Please use the search_tool")) {
+        console.log("[FLOW] Respond asking to use search_tool, routing to callAgentModel");
+        return "callAgentModel";
+    }
+    console.log("[FLOW] Normal response, ending workflow");
+    return "__end__";
+}
+function makeGraph() {
+    const workflow = new langgraph_1.StateGraph({
+        stateSchema: state_1.StateAnnotation,
+        input: state_1.InputStateAnnotation,
+    }, configuration_1.ConfigurationAnnotation)
+        .addNode("generateQuery", generateQuery)
+        .addNode("retrieve", retrieve)
+        .addNode("callAgentModel", callAgentModel)
+        .addNode("tools", tools_2.toolNode)
+        .addNode("reflect", reflect)
+        .addNode("respond", respond)
+        .addEdge("__start__", "generateQuery")
+        .addConditionalEdges("generateQuery", routeAfterQueryGen)
+        // Retrieval path with conditional routing after retrieve
+        .addConditionalEdges("retrieve", routeAfterRetrieve)
+        // Add conditional routing after respond
+        .addConditionalEdges("respond", routeAfterRespond)
+        // Agent path
+        .addConditionalEdges("callAgentModel", routeAfterAgent) // Route to tools or reflect
+        .addEdge("tools", "callAgentModel") // Loop back after tool use
+        .addConditionalEdges("reflect", routeAfterChecker) // Go to respond or back to agent
+        .addEdge("respond", "__end__"); // Always end at respond
+    const checkpointer = new langgraph_checkpoint_mongodb_1.MongoDBSaver({
+        client,
+        dbName: "AI-Travel-Agent",
+    });
+    app = workflow.compile({
+        checkpointer,
+        interruptBefore: [],
+        interruptAfter: [],
+    });
+    app.name = "Travel Agent";
+}
+function callAgent(query, threadId) {
+    return __awaiter(this, void 0, void 0, function* () {
+        try {
+            // Enhanced detection of simple queries that don't need tools
+            const isSimpleQuery = (query) => {
+                // Greetings and common conversational phrases
+                const conversationalPatterns = [
+                    /^hi\b/i,
+                    /^hello\b/i,
+                    /^hey\b/i,
+                    /^good (morning|afternoon|evening)\b/i,
+                    /^how are you\b/i,
+                    /^what's up\b/i,
+                    /^thanks?\b/i,
+                    /^thank you\b/i,
+                    /^bye\b/i,
+                    /^goodbye\b/i,
+                    /^see you\b/i,
+                ];
+                // If it matches any conversational pattern, it's a simple query
+                if (conversationalPatterns.some((pattern) => pattern.test(query))) {
+                    return true;
                 }
-                console.log("[FLOW] Documents found, routing to respond");
-                return "respond";
+                // Check if query is related to travel
+                const travelRelatedTerms = [
+                    "travel",
+                    "trip",
+                    "vacation",
+                    "hotel",
+                    "flight",
+                    "restaurant",
+                    "destination",
+                    "tour",
+                    "visit",
+                    "place",
+                    "attraction",
+                    "city",
+                    "country",
+                    "where",
+                    "when",
+                    "ticket",
+                    "booking",
+                    "reserve",
+                    "beach",
+                    "mountain",
+                    "museum",
+                    "park",
+                    "resort",
+                ];
+                // If the query doesn't contain any travel-related terms,
+                // and is relatively short, consider it a simple query
+                const words = query.toLowerCase().split(/\s+/);
+                const containsTravelTerms = travelRelatedTerms.some((term) => query.toLowerCase().includes(term.toLowerCase()));
+                // Short queries without travel terms are likely simple conversational queries
+                return !containsTravelTerms && words.length < 10;
+            };
+            // If it's a simple query, respond directly without using tools
+            if (isSimpleQuery(query)) {
+                const model = yield (0, configuration_1.loadChatModel)("openai/gpt-4o");
+                const response = yield model.invoke([
+                    {
+                        role: "system",
+                        content: "You are a friendly travel assistant. For non-travel related queries, respond naturally and briefly. Don't mention travel unless the user asks about it.",
+                    },
+                    new messages_1.HumanMessage({
+                        content: query,
+                    }),
+                ]);
+                return response.content;
             }
-            // Add a function to route after respond
-            function routeAfterRespond(state) {
-                // Get the last message
-                const lastMessage = state.messages[state.messages.length - 1];
-                // If the last message is asking to use search_tool, route to callAgentModel
-                if (lastMessage._getType() === "human" &&
-                    typeof lastMessage.content === "string" &&
-                    lastMessage.content.includes("Please use the search_tool")) {
-                    console.log("[FLOW] Respond asking to use search_tool, routing to callAgentModel");
-                    return "callAgentModel";
-                }
-                console.log("[FLOW] Normal response, ending workflow");
-                return "__end__";
+            // console.log("query", query);
+            const db = client.db("AI-Travel-Agent");
+            const collection = db.collection("places");
+            if (!app) {
+                makeGraph();
             }
-            const workflow = new langgraph_1.StateGraph({
-                stateSchema: state_1.StateAnnotation,
-                input: state_1.InputStateAnnotation,
-            }, configuration_1.ConfigurationAnnotation)
-                .addNode("generateQuery", generateQuery)
-                .addNode("retrieve", retrieve)
-                .addNode("callAgentModel", callAgentModel)
-                .addNode("tools", tools_2.toolNode)
-                .addNode("reflect", reflect)
-                .addNode("respond", respond)
-                .addEdge("__start__", "generateQuery")
-                .addConditionalEdges("generateQuery", routeAfterQueryGen)
-                // Retrieval path with conditional routing after retrieve
-                .addConditionalEdges("retrieve", routeAfterRetrieve)
-                // Add conditional routing after respond
-                .addConditionalEdges("respond", routeAfterRespond)
-                // Agent path
-                .addConditionalEdges("callAgentModel", routeAfterAgent) // Route to tools or reflect
-                .addEdge("tools", "callAgentModel") // Loop back after tool use
-                .addConditionalEdges("reflect", routeAfterChecker) // Go to respond or back to agent
-                .addEdge("respond", "__end__"); // Always end at respond
-            const checkpointer = new langgraph_checkpoint_mongodb_1.MongoDBSaver({
-                client,
-                dbName: "AI-Travel-Agent",
-            });
-            const app = workflow.compile({
-                checkpointer,
-                interruptBefore: [],
-                interruptAfter: [],
-            });
-            app.name = "Travel Agent";
+            if (query === "[FLOW]initialize") {
+                makeGraph();
+                return "Graph Initiated";
+            }
+            // Now using the searchTool from utils/tools.ts
+            // const tools = [lookupTool, ...MODEL_TOOLS];
+            // const toolNode1 = new ToolNode<typeof GraphState.State>(tools);
+            // const chatModel = new ChatOpenAI({
+            //   model: "gpt-4o",
+            //   temperature: 0.7,
+            // }).bindTools(tools);
             const finalState = yield app.invoke({
                 topic: query,
                 messages: [new messages_1.HumanMessage({ content: query })],
@@ -628,11 +603,11 @@ function callAgent(client, query, threadId) {
                 recursionLimit: 30,
                 configurable: {
                     thread_id: threadId,
-                    responseSystemPromptTemplate: prompts_2.RESPONSE_SYSTEM_PROMPT_TEMPLATE,
+                    responseSystemPromptTemplate: prompts_1.RESPONSE_SYSTEM_PROMPT_TEMPLATE,
                     responseModel: "openai/gpt-4o",
-                    querySystemPromptTemplate: prompts_2.QUERY_SYSTEM_PROMPT_TEMPLATE,
+                    querySystemPromptTemplate: prompts_1.QUERY_SYSTEM_PROMPT_TEMPLATE,
                     queryModel: "openai/gpt-4o",
-                    prompt: prompts_2.MAIN_PROMPT,
+                    prompt: prompts_1.MAIN_PROMPT,
                     maxSearchResults: 5,
                     maxInfoToolCalls: 3,
                     maxLoops: 6,
@@ -647,6 +622,31 @@ function callAgent(client, query, threadId) {
         catch (error) {
             console.error(error);
             process.exit(1);
+        }
+    });
+}
+function getApp() {
+    return __awaiter(this, void 0, void 0, function* () {
+        // Return existing app if already initialized
+        if (app)
+            return app;
+        try {
+            console.log("[LANGGRAPH] Initializing app...");
+            // Create a dummy query to initialize everything
+            const dummyQuery = "[FLOW]initialize";
+            const dummyThreadId = "initialization-thread";
+            // This will initialize the app variable
+            yield callAgent(dummyQuery, dummyThreadId);
+            // Make sure app is properly initialized with required configurable fields
+            if (!app) {
+                makeGraph();
+            }
+            console.log("[LANGGRAPH] App initialized successfully");
+            return app;
+        }
+        catch (error) {
+            console.error("[LANGGRAPH] Error initializing app:", error);
+            throw error;
         }
     });
 }

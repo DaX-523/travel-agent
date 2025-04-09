@@ -8,14 +8,14 @@ exports.getTextContent = getTextContent;
 const zod_1 = require("zod");
 function getMessageText(msg) {
     /** Get the text content of a message. */
-    console.log(msg);
+    // console.log(msg);
     const content = msg.content;
     if (typeof content === "string") {
         return content;
     }
     else {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        console.log(content);
+        // console.log(content);
         const txts = content.map((c) => typeof c === "string" ? c : c.text || "");
         return txts.join("").trim();
     }

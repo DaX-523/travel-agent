@@ -20,9 +20,9 @@ const mongodb_2 = require("@langchain/mongodb");
 const zod_1 = require("zod");
 const fs_1 = __importDefault(require("fs"));
 const csv_parser_1 = __importDefault(require("csv-parser"));
-const llmOutput_1 = __importDefault(require("./schemas/llmOutput"));
-const generateSyntheticData_1 = require("./utils/generateSyntheticData");
-const createItinerarySummary_1 = require("./utils/createItinerarySummary");
+const llmOutput_1 = __importDefault(require("./v1/llmOutput"));
+const generateSyntheticData_1 = require("./v1/generateSyntheticData");
+const createItinerarySummary_1 = require("./v1/createItinerarySummary");
 require("dotenv/config");
 const cohere_1 = require("@langchain/cohere");
 const pinecone_1 = require("@pinecone-database/pinecone");
@@ -33,6 +33,7 @@ const llm = new cohere_1.ChatCohere({
     temperature: 0.7,
 });
 const parser = output_parsers_1.StructuredOutputParser.fromZodSchema(zod_1.z.array(llmOutput_1.default));
+// seedDB() -> v1 code
 //Function to seed data in mongoDB Atlas vector
 function seedDB() {
     return __awaiter(this, void 0, void 0, function* () {

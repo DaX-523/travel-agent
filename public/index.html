@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Travel Agent Chat</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        max-width: 800px;
+        margin: 0 auto;
+        padding: 20px;
+      }
+      #chat-container {
+        height: 400px;
+        border: 1px solid #ccc;
+        padding: 10px;
+        margin-bottom: 20px;
+        overflow-y: auto;
+      }
+      #message-input {
+        width: 100%;
+        padding: 10px;
+        margin-bottom: 10px;
+      }
+      button {
+        padding: 10px 20px;
+        background-color: #007bff;
+        color: white;
+        border: none;
+        cursor: pointer;
+      }
+      button:hover {
+        background-color: #0056b3;
+      }
+      .message {
+        margin-bottom: 10px;
+        padding: 10px;
+        border-radius: 5px;
+      }
+      .user-message {
+        background-color: #e3f2fd;
+        margin-left: 20%;
+      }
+      .assistant-message {
+        background-color: #f5f5f5;
+        margin-right: 20%;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Travel Agent Chat</h1>
+    <div id="chat-container"></div>
+    <input type="text" id="message-input" placeholder="Type your message..." />
+    <button onclick="sendMessage()">Send</button>
+
+    <script>
+      const chatContainer = document.getElementById("chat-container");
+      const messageInput = document.getElementById("message-input");
+      let eventSource;
+
+      function addMessage(content, isUser = false) {
+        const messageDiv = document.createElement("div");
+        messageDiv.className = `message ${
+          isUser ? "user-message" : "assistant-message"
+        }`;
+        messageDiv.textContent = content;
+        chatContainer.appendChild(messageDiv);
+        chatContainer.scrollTop = chatContainer.scrollHeight;
+      }
+
+      function sendMessage() {
+        const message = messageInput.value.trim();
+        if (!message) return;
+
+        addMessage(message, true);
+        messageInput.value = "";
+
+        if (eventSource) {
+          eventSource.close();
+        }
+
+        const messages = [{ role: "user", content: message }];
+
+        eventSource = new EventSource(
+          `/api/chat/stream?message=${encodeURIComponent(message)}`
+        );
+        let responseText = "";
+
+        eventSource.onmessage = (event) => {
+          responseText += event.data;
+          const lastMessage = document.querySelector(
+            ".assistant-message:last-child"
+          );
+          if (lastMessage) {
+            lastMessage.textContent = responseText;
+          } else {
+            addMessage(responseText);
+          }
+        };
+
+        eventSource.onerror = () => {
+          eventSource.close();
+        };
+      }
+
+      messageInput.addEventListener("keypress", (e) => {
+        if (e.key === "Enter") {
+          sendMessage();
+        }
+      });
+    </script>
+  </body>
+</html>

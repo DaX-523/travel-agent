@@ -152,10 +152,13 @@ export async function loadChatModel(
   const index = fullySpecifiedName.indexOf("/");
   if (index === -1) {
     // If there's no "/", assume it's just the model
-    return await initChatModel(fullySpecifiedName);
+    return await initChatModel(fullySpecifiedName, { streaming: true });
   } else {
     const provider = fullySpecifiedName.slice(0, index);
     const model = fullySpecifiedName.slice(index + 1);
-    return await initChatModel(model, { modelProvider: provider });
+    return await initChatModel(model, {
+      modelProvider: provider,
+      streaming: true,
+    });
   }
 }

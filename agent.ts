@@ -423,12 +423,321 @@ function routeAfterQueryGen(
   return "retrieve";
 }
 
+async function generateQuery(
+  state: typeof GraphState.State,
+  config?: RunnableConfig
+): Promise<typeof GraphState.Update> {
+  console.log("[FLOW] Starting generateQuery node");
+  const messages = state.messages;
+  // console.log(messages, "messages");
+  if (messages.length === 1) {
+    const humanInput = getMessageText(messages[messages.length - 1]);
+    console.log(
+      `[FLOW] First message, using direct input as query: "${humanInput.substring(
+        0,
+        50
+      )}${humanInput.length > 50 ? "..." : ""}"`
+    );
+    return {
+      queries: [humanInput],
+    };
+  } else {
+    const configuration = ensureConfiguration(config);
+    console.log("[FLOW] Generating refined search query from conversation");
+    const SearchQuery = z.object({
+      query: z.string().describe("Search the indexed documents for a query."),
+    });
+    // Feel free to customize the prompt, model, and other logic!
+    const systemMessage = configuration.querySystemPromptTemplate
+      .replace("{queries}", (state.queries || []).join("\n- "))
+      .replace("{systemTime}", new Date().toISOString());
+
+    const messageValue = [
+      { role: "system", content: systemMessage },
+      ...state.messages,
+    ];
+    const model = (
+      await loadChatModel(configuration.responseModel)
+    ).withStructuredOutput(SearchQuery);
+
+    const generated = await model.invoke(messageValue);
+    console.log(`[FLOW] Generated query: "${generated.query}"`);
+    return {
+      queries: [generated.query],
+    };
+  }
+}
+
+async function retrieve(
+  state: typeof GraphState.State,
+  config: RunnableConfig
+): Promise<typeof GraphState.Update> {
+  console.log("[FLOW] Starting retrieve node");
+  const my_retriever = await makeRetriever(config);
+  const query = state.queries[state.queries.length - 1];
+  console.log(`[FLOW] Retrieving documents for query: "${query}"`);
+  const docs = await my_retriever.invoke(query);
+  console.log(`[FLOW] Retrieved ${docs.length} documents`);
+
+  // If no documents found, we should route to the agent to use web search
+  if (docs.length === 0) {
+    console.log(
+      "[FLOW] No documents found in the database, will use web search"
+    );
+    // Add a message prompting the agent to use web search
+    return {
+      retrievedDocs: docs,
+      messages: [
+        new HumanMessage({
+          content: `No information about "${query}" was found in our database. Please use the search_tool to find information about this on the web.`,
+        }),
+      ],
+    };
+  }
+
+  return { retrievedDocs: docs };
+}
+
+async function respond(
+  state: typeof GraphState.State,
+  config: RunnableConfig
+): Promise<typeof GraphState.Update> {
+  console.log("[FLOW] Starting respond node");
+  const configuration = ensureConfiguration(config);
+
+  // Get the query and check document relevance
+  const query = state.queries[state.queries.length - 1];
+  const retrievedDocs = formatDocs(state.retrievedDocs);
+
+  // Check if documents contain relevant information about the query
+  const containsQuery = query
+    .toLowerCase()
+    .split(" ")
+    .filter(
+      (word) =>
+        word.length > 3 &&
+        ![
+          "what",
+          "where",
+          "when",
+          "how",
+          "this",
+          "that",
+          "with",
+          "from",
+          "about",
+          "places",
+          "place",
+          "visit",
+          "travel",
+        ].includes(word)
+    );
+
+  const isRelevant =
+    state.retrievedDocs.length > 0 &&
+    containsQuery.some((keyword) =>
+      retrievedDocs.toLowerCase().includes(keyword.toLowerCase())
+    );
+
+  console.log(`[FLOW] Query keywords: ${containsQuery.join(", ")}`);
+  console.log(`[FLOW] Documents relevant to query: ${isRelevant}`);
+
+  // If documents are not relevant, route to agent for web search
+  if (!isRelevant) {
+    console.log(
+      "[FLOW] Retrieved documents not relevant to query, routing to search tool"
+    );
+    return {
+      messages: [
+        new HumanMessage({
+          content: `The information in our database doesn't match what you're looking for regarding "${query}". Please use the search_tool to find this information on the web.`,
+        }),
+      ],
+    };
+  }
+
+  const model = await loadChatModel(configuration.responseModel);
+
+  // Feel free to customize the prompt, model, and other logic!
+  const systemMessage = configuration.responseSystemPromptTemplate
+    .replace("{retrievedDocs}", retrievedDocs)
+    .replace("{systemTime}", new Date().toISOString());
+  const messageValue = [
+    { role: "system", content: systemMessage },
+    ...state.messages,
+  ];
+  const response = await model.invoke(messageValue);
+  console.log("[FLOW] Response generated successfully");
+  // We return a list, because this will get added to the existing list
+  return { messages: [response] };
+}
+
+// Modify the routeAfterRetrieve function
+function routeAfterRetrieve(
+  state: typeof GraphState.State
+): "respond" | "callAgentModel" {
+  // If no documents were found, route to the agent to use web search
+  if (state.retrievedDocs.length === 0) {
+    console.log("[FLOW] No documents found, routing to agent for web search");
+    return "callAgentModel";
+  }
+
+  console.log("[FLOW] Documents found, routing to respond");
+  return "respond";
+}
+
+// Add a function to route after respond
+function routeAfterRespond(
+  state: typeof GraphState.State
+): "callAgentModel" | "__end__" {
+  // Get the last message
+  const lastMessage = state.messages[state.messages.length - 1];
+
+  // If the last message is asking to use search_tool, route to callAgentModel
+  if (
+    lastMessage._getType() === "human" &&
+    typeof lastMessage.content === "string" &&
+    lastMessage.content.includes("Please use the search_tool")
+  ) {
+    console.log(
+      "[FLOW] Respond asking to use search_tool, routing to callAgentModel"
+    );
+    return "callAgentModel";
+  }
+  console.log("[FLOW] Normal response, ending workflow");
+  return "__end__";
+}
+
+function makeGraph() {
+  const workflow = new StateGraph(
+    {
+      stateSchema: GraphState,
+      input: InputStateAnnotation,
+    },
+    ConfigurationAnnotation
+  )
+    .addNode("generateQuery", generateQuery)
+    .addNode("retrieve", retrieve)
+    .addNode("callAgentModel", callAgentModel)
+    .addNode("tools", toolNode)
+    .addNode("reflect", reflect)
+    .addNode("respond", respond)
+
+    .addEdge("__start__", "generateQuery")
+    .addConditionalEdges("generateQuery", routeAfterQueryGen)
+
+    // Retrieval path with conditional routing after retrieve
+    .addConditionalEdges("retrieve", routeAfterRetrieve)
+
+    // Add conditional routing after respond
+    .addConditionalEdges("respond", routeAfterRespond)
+
+    // Agent path
+    .addConditionalEdges("callAgentModel", routeAfterAgent) // Route to tools or reflect
+    .addEdge("tools", "callAgentModel") // Loop back after tool use
+    .addConditionalEdges("reflect", routeAfterChecker) // Go to respond or back to agent
+    .addEdge("respond", "__end__"); // Always end at respond
+
+  const checkpointer = new MongoDBSaver({
+    client,
+    dbName: "AI-Travel-Agent",
+  });
+  app = workflow.compile({
+    checkpointer,
+    interruptBefore: [],
+    interruptAfter: [],
+  });
+  app.name = "Travel Agent";
+}
+
 export default async function callAgent(query: string, threadId: string) {
   try {
+    // Enhanced detection of simple queries that don't need tools
+    const isSimpleQuery = (query: string): boolean => {
+      // Greetings and common conversational phrases
+      const conversationalPatterns = [
+        /^hi\b/i,
+        /^hello\b/i,
+        /^hey\b/i,
+        /^good (morning|afternoon|evening)\b/i,
+        /^how are you\b/i,
+        /^what's up\b/i,
+        /^thanks?\b/i,
+        /^thank you\b/i,
+        /^bye\b/i,
+        /^goodbye\b/i,
+        /^see you\b/i,
+      ];
+
+      // If it matches any conversational pattern, it's a simple query
+      if (conversationalPatterns.some((pattern) => pattern.test(query))) {
+        return true;
+      }
+
+      // Check if query is related to travel
+      const travelRelatedTerms = [
+        "travel",
+        "trip",
+        "vacation",
+        "hotel",
+        "flight",
+        "restaurant",
+        "destination",
+        "tour",
+        "visit",
+        "place",
+        "attraction",
+        "city",
+        "country",
+        "where",
+        "when",
+        "ticket",
+        "booking",
+        "reserve",
+        "beach",
+        "mountain",
+        "museum",
+        "park",
+        "resort",
+      ];
+
+      // If the query doesn't contain any travel-related terms,
+      // and is relatively short, consider it a simple query
+      const words = query.toLowerCase().split(/\s+/);
+      const containsTravelTerms = travelRelatedTerms.some((term) =>
+        query.toLowerCase().includes(term.toLowerCase())
+      );
+
+      // Short queries without travel terms are likely simple conversational queries
+      return !containsTravelTerms && words.length < 10;
+    };
+
+    // If it's a simple query, respond directly without using tools
+    if (isSimpleQuery(query)) {
+      const model = await loadChatModel("openai/gpt-4o");
+      const response = await model.invoke([
+        {
+          role: "system",
+          content:
+            "You are a friendly travel assistant. For non-travel related queries, respond naturally and briefly. Don't mention travel unless the user asks about it.",
+        },
+        new HumanMessage({
+          content: query,
+        }),
+      ]);
+      return response.content;
+    }
+
     // console.log("query", query);
     const db = client.db("AI-Travel-Agent");
     const collection = db.collection("places");
-
+    if (!app) {
+      makeGraph();
+    }
+    if (query === "[FLOW]initialize") {
+      makeGraph();
+      return "Graph Initiated";
+    }
     // Now using the searchTool from utils/tools.ts
     // const tools = [lookupTool, ...MODEL_TOOLS];
     // const toolNode1 = new ToolNode<typeof GraphState.State>(tools);
@@ -437,233 +746,7 @@ export default async function callAgent(query: string, threadId: string) {
     //   model: "gpt-4o",
     //   temperature: 0.7,
     // }).bindTools(tools);
-    const SearchQuery = z.object({
-      query: z.string().describe("Search the indexed documents for a query."),
-    });
-    async function generateQuery(
-      state: typeof GraphState.State,
-      config?: RunnableConfig
-    ): Promise<typeof GraphState.Update> {
-      console.log("[FLOW] Starting generateQuery node");
-      const messages = state.messages;
-      // console.log(messages, "messages");
-      if (messages.length === 1) {
-        const humanInput = getMessageText(messages[messages.length - 1]);
-        console.log(
-          `[FLOW] First message, using direct input as query: "${humanInput.substring(
-            0,
-            50
-          )}${humanInput.length > 50 ? "..." : ""}"`
-        );
-        return {
-          queries: [humanInput],
-        };
-      } else {
-        const configuration = ensureConfiguration(config);
-        console.log("[FLOW] Generating refined search query from conversation");
-        // Feel free to customize the prompt, model, and other logic!
-        const systemMessage = configuration.querySystemPromptTemplate
-          .replace("{queries}", (state.queries || []).join("\n- "))
-          .replace("{systemTime}", new Date().toISOString());
 
-        const messageValue = [
-          { role: "system", content: systemMessage },
-          ...state.messages,
-        ];
-        const model = (
-          await loadChatModel(configuration.responseModel)
-        ).withStructuredOutput(SearchQuery);
-
-        const generated = await model.invoke(messageValue);
-        console.log(`[FLOW] Generated query: "${generated.query}"`);
-        return {
-          queries: [generated.query],
-        };
-      }
-    }
-
-    async function retrieve(
-      state: typeof GraphState.State,
-      config: RunnableConfig
-    ): Promise<typeof GraphState.Update> {
-      console.log("[FLOW] Starting retrieve node");
-      const my_retriever = await makeRetriever(config);
-      const query = state.queries[state.queries.length - 1];
-      console.log(`[FLOW] Retrieving documents for query: "${query}"`);
-      const docs = await my_retriever.invoke(query);
-      console.log(`[FLOW] Retrieved ${docs.length} documents`);
-
-      // If no documents found, we should route to the agent to use web search
-      if (docs.length === 0) {
-        console.log(
-          "[FLOW] No documents found in the database, will use web search"
-        );
-        // Add a message prompting the agent to use web search
-        return {
-          retrievedDocs: docs,
-          messages: [
-            new HumanMessage({
-              content: `No information about "${query}" was found in our database. Please use the search_tool to find information about this on the web.`,
-            }),
-          ],
-        };
-      }
-
-      return { retrievedDocs: docs };
-    }
-
-    async function respond(
-      state: typeof GraphState.State,
-      config: RunnableConfig
-    ): Promise<typeof GraphState.Update> {
-      console.log("[FLOW] Starting respond node");
-      const configuration = ensureConfiguration(config);
-
-      // Get the query and check document relevance
-      const query = state.queries[state.queries.length - 1];
-      const retrievedDocs = formatDocs(state.retrievedDocs);
-
-      // Check if documents contain relevant information about the query
-      const containsQuery = query
-        .toLowerCase()
-        .split(" ")
-        .filter(
-          (word) =>
-            word.length > 3 &&
-            ![
-              "what",
-              "where",
-              "when",
-              "how",
-              "this",
-              "that",
-              "with",
-              "from",
-              "about",
-              "places",
-              "place",
-              "visit",
-              "travel",
-            ].includes(word)
-        );
-
-      const isRelevant =
-        state.retrievedDocs.length > 0 &&
-        containsQuery.some((keyword) =>
-          retrievedDocs.toLowerCase().includes(keyword.toLowerCase())
-        );
-
-      console.log(`[FLOW] Query keywords: ${containsQuery.join(", ")}`);
-      console.log(`[FLOW] Documents relevant to query: ${isRelevant}`);
-
-      // If documents are not relevant, route to agent for web search
-      if (!isRelevant) {
-        console.log(
-          "[FLOW] Retrieved documents not relevant to query, routing to search tool"
-        );
-        return {
-          messages: [
-            new HumanMessage({
-              content: `The information in our database doesn't match what you're looking for regarding "${query}". Please use the search_tool to find this information on the web.`,
-            }),
-          ],
-        };
-      }
-
-      const model = await loadChatModel(configuration.responseModel);
-
-      // Feel free to customize the prompt, model, and other logic!
-      const systemMessage = configuration.responseSystemPromptTemplate
-        .replace("{retrievedDocs}", retrievedDocs)
-        .replace("{systemTime}", new Date().toISOString());
-      const messageValue = [
-        { role: "system", content: systemMessage },
-        ...state.messages,
-      ];
-      const response = await model.invoke(messageValue);
-      console.log("[FLOW] Response generated successfully");
-      // We return a list, because this will get added to the existing list
-      return { messages: [response] };
-    }
-
-    // Modify the routeAfterRetrieve function
-    function routeAfterRetrieve(
-      state: typeof GraphState.State
-    ): "respond" | "callAgentModel" {
-      // If no documents were found, route to the agent to use web search
-      if (state.retrievedDocs.length === 0) {
-        console.log(
-          "[FLOW] No documents found, routing to agent for web search"
-        );
-        return "callAgentModel";
-      }
-
-      console.log("[FLOW] Documents found, routing to respond");
-      return "respond";
-    }
-
-    // Add a function to route after respond
-    function routeAfterRespond(
-      state: typeof GraphState.State
-    ): "callAgentModel" | "__end__" {
-      // Get the last message
-      const lastMessage = state.messages[state.messages.length - 1];
-
-      // If the last message is asking to use search_tool, route to callAgentModel
-      if (
-        lastMessage._getType() === "human" &&
-        typeof lastMessage.content === "string" &&
-        lastMessage.content.includes("Please use the search_tool")
-      ) {
-        console.log(
-          "[FLOW] Respond asking to use search_tool, routing to callAgentModel"
-        );
-        return "callAgentModel";
-      }
-
-      console.log("[FLOW] Normal response, ending workflow");
-      return "__end__";
-    }
-
-    const workflow = new StateGraph(
-      {
-        stateSchema: GraphState,
-        input: InputStateAnnotation,
-      },
-      ConfigurationAnnotation
-    )
-      .addNode("generateQuery", generateQuery)
-      .addNode("retrieve", retrieve)
-      .addNode("callAgentModel", callAgentModel)
-      .addNode("tools", toolNode)
-      .addNode("reflect", reflect)
-      .addNode("respond", respond)
-
-      .addEdge("__start__", "generateQuery")
-      .addConditionalEdges("generateQuery", routeAfterQueryGen)
-
-      // Retrieval path with conditional routing after retrieve
-      .addConditionalEdges("retrieve", routeAfterRetrieve)
-
-      // Add conditional routing after respond
-      .addConditionalEdges("respond", routeAfterRespond)
-
-      // Agent path
-      .addConditionalEdges("callAgentModel", routeAfterAgent) // Route to tools or reflect
-      .addEdge("tools", "callAgentModel") // Loop back after tool use
-      .addConditionalEdges("reflect", routeAfterChecker) // Go to respond or back to agent
-      .addEdge("respond", "__end__"); // Always end at respond
-
-    const checkpointer = new MongoDBSaver({
-      client,
-      dbName: "AI-Travel-Agent",
-    });
-    app = workflow.compile({
-      checkpointer,
-      interruptBefore: [],
-      interruptAfter: [],
-    });
-    app.name = "Travel Agent";
     const finalState = await app.invoke(
       {
         topic: query,
@@ -706,11 +789,16 @@ export async function getApp() {
     console.log("[LANGGRAPH] Initializing app...");
 
     // Create a dummy query to initialize everything
-    const dummyQuery = "initialize";
+    const dummyQuery = "[FLOW]initialize";
     const dummyThreadId = "initialization-thread";
 
     // This will initialize the app variable
     await callAgent(dummyQuery, dummyThreadId);
+
+    // Make sure app is properly initialized with required configurable fields
+    if (!app) {
+      makeGraph();
+    }
 
     console.log("[LANGGRAPH] App initialized successfully");
     return app;

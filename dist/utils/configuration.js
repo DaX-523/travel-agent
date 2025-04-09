@@ -118,12 +118,15 @@ function loadChatModel(fullySpecifiedName) {
         const index = fullySpecifiedName.indexOf("/");
         if (index === -1) {
             // If there's no "/", assume it's just the model
-            return yield (0, universal_1.initChatModel)(fullySpecifiedName);
+            return yield (0, universal_1.initChatModel)(fullySpecifiedName, { streaming: true });
         }
         else {
             const provider = fullySpecifiedName.slice(0, index);
             const model = fullySpecifiedName.slice(index + 1);
-            return yield (0, universal_1.initChatModel)(model, { modelProvider: provider });
+            return yield (0, universal_1.initChatModel)(model, {
+                modelProvider: provider,
+                streaming: true,
+            });
         }
     });
 }

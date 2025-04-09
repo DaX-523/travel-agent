@@ -175,7 +175,7 @@ function makePineconeRetriever(configuration) {
                 console.log("Performing regular vector search as fallback");
                 // Create fallback retriever
                 const fallbackRetriever = vectorStore.asRetriever({ k });
-                const docs = yield fallbackRetriever.getRelevantDocuments(query);
+                const docs = yield fallbackRetriever.invoke(query); //  HERE
                 // Convert metadata formats
                 return docs.map((doc) => {
                     return new documents_1.Document({
@@ -254,7 +254,7 @@ function makeTextEmbeddings(modelName) {
 function makeRetriever(config) {
     return __awaiter(this, void 0, void 0, function* () {
         const configuration = (0, configuration_1.ensureConfiguration)(config);
-        console.log("Using configuration:", configuration);
+        // console.log("Using configuration:", configuration);
         return makePineconeRetriever(configuration);
     });
 }
