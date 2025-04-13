@@ -509,57 +509,134 @@ function makeGraph() {
 function callAgent(query, threadId) {
     return __awaiter(this, void 0, void 0, function* () {
         try {
+            // Check for completely non-travel related queries
+            const nonTravelKeywords = [
+                "programming",
+                "code",
+                "software",
+                "algorithm",
+                "math",
+                "equation",
+                "theorem",
+                "calculation",
+                "physics",
+                "chemistry",
+                "biology",
+                "medicine",
+                "disease",
+                "politics",
+                "election",
+                "government",
+                "policy",
+                "recipe",
+                "cook",
+                "bake",
+                "food",
+                "stock",
+                "invest",
+                "trading",
+                "crypto",
+                "homework",
+                "assignment",
+                "problem",
+                "dating",
+                "relationship",
+                "gaming",
+                "video game",
+                "philosophy",
+                "history",
+                "war",
+                "battle",
+                "ancient",
+                "computer",
+                "technology",
+                "device",
+                "gadget",
+                "sports",
+                "football",
+                "basketball",
+                "baseball",
+                "write",
+                "essay",
+                "paper",
+                "report",
+            ];
+            // Travel related terms to check for
+            const travelRelatedTerms = [
+                "travel",
+                "trip",
+                "vacation",
+                "hotel",
+                "flight",
+                "restaurant",
+                "destination",
+                "tour",
+                "visit",
+                "place",
+                "attraction",
+                "city",
+                "country",
+                "where",
+                "when",
+                "ticket",
+                "booking",
+                "reserve",
+                "beach",
+                "mountain",
+                "museum",
+                "park",
+                "resort",
+                "tourist",
+                "sightseeing",
+                "explore",
+                "adventure",
+                "guide",
+                "itinerary",
+            ];
+            // Simple greeting patterns that are acceptable
+            const conversationalPatterns = [
+                /^hi\b/i,
+                /^hello\b/i,
+                /^hey\b/i,
+                /^good (morning|afternoon|evening)\b/i,
+                /^how are you\b/i,
+                /^what's up\b/i,
+                /^thanks?\b/i,
+                /^thank you\b/i,
+                /^bye\b/i,
+                /^goodbye\b/i,
+                /^see you\b/i,
+            ];
+            // If it's a simple greeting, handle it normally
+            const isSimpleGreeting = conversationalPatterns.some((pattern) => pattern.test(query));
+            if (isSimpleGreeting) {
+                const model = yield (0, configuration_1.loadChatModel)("openai/gpt-4o");
+                const response = yield model.invoke([
+                    {
+                        role: "system",
+                        content: "You are a friendly travel assistant. For conversational greetings, respond naturally and briefly.",
+                    },
+                    new messages_1.HumanMessage({
+                        content: query,
+                    }),
+                ]);
+                return response.content;
+            }
+            // Check if query contains non-travel keywords
+            const containsNonTravelKeywords = nonTravelKeywords.some((keyword) => query.toLowerCase().includes(keyword.toLowerCase()));
+            // Check if query contains travel-related terms
+            const containsTravelTerms = travelRelatedTerms.some((term) => query.toLowerCase().includes(term.toLowerCase()));
+            // If query contains non-travel keywords or doesn't contain travel terms and is longer than 5 words,
+            // it's likely not travel-related
+            const words = query.toLowerCase().split(/\s+/);
+            if (containsNonTravelKeywords ||
+                (words.length > 5 && !containsTravelTerms)) {
+                return "I'm specialized in travel assistance and can only provide information about destinations, accommodations, attractions, and travel planning. For questions outside travel-related topics, please consult a general-purpose assistant.";
+            }
             // Enhanced detection of simple queries that don't need tools
             const isSimpleQuery = (query) => {
-                // Greetings and common conversational phrases
-                const conversationalPatterns = [
-                    /^hi\b/i,
-                    /^hello\b/i,
-                    /^hey\b/i,
-                    /^good (morning|afternoon|evening)\b/i,
-                    /^how are you\b/i,
-                    /^what's up\b/i,
-                    /^thanks?\b/i,
-                    /^thank you\b/i,
-                    /^bye\b/i,
-                    /^goodbye\b/i,
-                    /^see you\b/i,
-                ];
-                // If it matches any conversational pattern, it's a simple query
-                if (conversationalPatterns.some((pattern) => pattern.test(query))) {
-                    return true;
-                }
-                // Check if query is related to travel
-                const travelRelatedTerms = [
-                    "travel",
-                    "trip",
-                    "vacation",
-                    "hotel",
-                    "flight",
-                    "restaurant",
-                    "destination",
-                    "tour",
-                    "visit",
-                    "place",
-                    "attraction",
-                    "city",
-                    "country",
-                    "where",
-                    "when",
-                    "ticket",
-                    "booking",
-                    "reserve",
-                    "beach",
-                    "mountain",
-                    "museum",
-                    "park",
-                    "resort",
-                ];
                 // If the query doesn't contain any travel-related terms,
                 // and is relatively short, consider it a simple query
-                const words = query.toLowerCase().split(/\s+/);
-                const containsTravelTerms = travelRelatedTerms.some((term) => query.toLowerCase().includes(term.toLowerCase()));
-                // Short queries without travel terms are likely simple conversational queries
                 return !containsTravelTerms && words.length < 10;
             };
             // If it's a simple query, respond directly without using tools
@@ -568,7 +645,7 @@ function callAgent(query, threadId) {
                 const response = yield model.invoke([
                     {
                         role: "system",
-                        content: "You are a friendly travel assistant. For non-travel related queries, respond naturally and briefly. Don't mention travel unless the user asks about it.",
+                        content: "You are a friendly travel assistant. For conversational greetings like 'hello', 'thank you', etc., respond naturally and briefly. For any substantive questions not related to travel, tourism, vacations, destinations, or hospitality, politely decline with: 'I'm specialized in travel assistance and can only provide information about destinations, accommodations, attractions, and travel planning. For questions outside travel-related topics, please consult a general-purpose assistant.' DO NOT attempt to answer non-travel questions.",
                     },
                     new messages_1.HumanMessage({
                         content: query,

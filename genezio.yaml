@@ -1,0 +1,27 @@
+name: travel-agent
+region: us-east-1
+yamlVersion: 2
+services:
+  databases:
+    - name: my-mongo-db
+      type: mongo-atlas
+backend:
+  path: .
+  language:
+    name: ts
+    runtime: nodejs20.x
+    packageManager: npm
+  functions:
+    - name: express
+      path: .
+      entry: dist/index.js
+      type: httpServer
+      env: .env
+  scripts:
+    deploy:
+      - npm install
+      - npm run build
+    local:
+      - npm install
+      - npm run build
+      - node --env-file=.env dist/index.js

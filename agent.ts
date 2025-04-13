@@ -38,6 +38,11 @@ import {
   complexPatterns,
   fallBackTemplate,
 } from "./utils/constants";
+import {
+  analyzeQuery,
+  handleGreeting,
+  POLITE_REJECTION_MESSAGE,
+} from "./utils/query-filter";
 
 export type AnyRecord = Record<string, any>;
 
@@ -652,74 +657,27 @@ function makeGraph() {
 
 export default async function callAgent(query: string, threadId: string) {
   try {
-    // Enhanced detection of simple queries that don't need tools
-    const isSimpleQuery = (query: string): boolean => {
-      // Greetings and common conversational phrases
-      const conversationalPatterns = [
-        /^hi\b/i,
-        /^hello\b/i,
-        /^hey\b/i,
-        /^good (morning|afternoon|evening)\b/i,
-        /^how are you\b/i,
-        /^what's up\b/i,
-        /^thanks?\b/i,
-        /^thank you\b/i,
-        /^bye\b/i,
-        /^goodbye\b/i,
-        /^see you\b/i,
-      ];
+    // Analyze the query using our utility function
+    const { isOffTopic, isSimple, isGreeting } = analyzeQuery(query);
 
-      // If it matches any conversational pattern, it's a simple query
-      if (conversationalPatterns.some((pattern) => pattern.test(query))) {
-        return true;
-      }
+    // If query is off-topic, return polite rejection message
+    if (isOffTopic) {
+      return POLITE_REJECTION_MESSAGE;
+    }
 
-      // Check if query is related to travel
-      const travelRelatedTerms = [
-        "travel",
-        "trip",
-        "vacation",
-        "hotel",
-        "flight",
-        "restaurant",
-        "destination",
-        "tour",
-        "visit",
-        "place",
-        "attraction",
-        "city",
-        "country",
-        "where",
-        "when",
-        "ticket",
-        "booking",
-        "reserve",
-        "beach",
-        "mountain",
-        "museum",
-        "park",
-        "resort",
-      ];
+    // If it's a simple greeting, handle it directly
+    if (isGreeting) {
+      return await handleGreeting(query);
+    }
 
-      // If the query doesn't contain any travel-related terms,
-      // and is relatively short, consider it a simple query
-      const words = query.toLowerCase().split(/\s+/);
-      const containsTravelTerms = travelRelatedTerms.some((term) =>
-        query.toLowerCase().includes(term.toLowerCase())
-      );
-
-      // Short queries without travel terms are likely simple conversational queries
-      return !containsTravelTerms && words.length < 10;
-    };
-
-    // If it's a simple query, respond directly without using tools
-    if (isSimpleQuery(query)) {
+    // If it's a simple query but not a greeting, handle with basic model
+    if (isSimple) {
       const model = await loadChatModel("openai/gpt-4o");
       const response = await model.invoke([
         {
           role: "system",
           content:
-            "You are a friendly travel assistant. For non-travel related queries, respond naturally and briefly. Don't mention travel unless the user asks about it.",
+            "You are a friendly travel assistant. For conversational greetings like 'hello', 'thank you', etc., respond naturally and briefly. For any substantive questions not related to travel, tourism, vacations, destinations, or hospitality, politely decline with: 'I'm specialized in travel assistance and can only provide information about destinations, accommodations, attractions, and travel planning. For questions outside travel-related topics, please consult a general-purpose assistant.' DO NOT attempt to answer non-travel questions.",
         },
         new HumanMessage({
           content: query,
@@ -738,14 +696,6 @@ export default async function callAgent(query: string, threadId: string) {
       makeGraph();
       return "Graph Initiated";
     }
-    // Now using the searchTool from utils/tools.ts
-    // const tools = [lookupTool, ...MODEL_TOOLS];
-    // const toolNode1 = new ToolNode<typeof GraphState.State>(tools);
-
-    // const chatModel = new ChatOpenAI({
-    //   model: "gpt-4o",
-    //   temperature: 0.7,
-    // }).bindTools(tools);
 
     const finalState = await app.invoke(
       {

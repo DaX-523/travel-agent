@@ -6,6 +6,7 @@
   "scripts": {
     "seed": "npx ts-node seed-db.ts",
     "dev": "npx tsc -b && node dist/index.js",
+    "build": "npx tsc -b",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [
