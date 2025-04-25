@@ -83,3 +83,16 @@ export const InfoIsSatisfactory = z.object({
       "If the result is not satisfactory, provide clear and specific instructions on what needs to be improved or added to make the information satisfactory. This should include details on missing information, areas that need more depth, or specific aspects to focus on in further research."
     ),
 });
+
+export const decayFunc = (max: number) => {
+  const initialPercent = 0.8; // 80% when max = 10
+  const decayRate = 0.01; // Smaller = slower decay
+
+  // Apply exponential decay starting from max = 10
+  const effectiveMax = Math.max(max, 10); // Ensure it doesn't go below 10
+  const percentage =
+    initialPercent * Math.exp(-decayRate * (effectiveMax - 10));
+
+  const selected = percentage * max;
+  return Math.round(selected); // or use Math.floor/ceil as needed
+};

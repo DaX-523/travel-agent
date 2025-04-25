@@ -129,10 +129,10 @@ export function ensureConfiguration(
     responseSystemPromptTemplate:
       configurable.responseSystemPromptTemplate ||
       RESPONSE_SYSTEM_PROMPT_TEMPLATE,
-    responseModel: configurable.responseModel || "openai/gpt-4o",
+    responseModel: configurable.responseModel || "groq/llama3-70b-8192",
     querySystemPromptTemplate:
       configurable.querySystemPromptTemplate || QUERY_SYSTEM_PROMPT_TEMPLATE,
-    queryModel: configurable.queryModel || "openai/gpt-4o",
+    queryModel: configurable.queryModel || "groq/llama3-70b-8192",
     prompt: configurable.prompt ?? MAIN_PROMPT,
     maxSearchResults: configurable.maxSearchResults ?? 5,
     maxInfoToolCalls: configurable.maxInfoToolCalls ?? 3,
@@ -147,15 +147,19 @@ export function ensureConfiguration(
  * @returns A Promise that resolves to a BaseChatModel instance.
  */
 export async function loadChatModel(
-  fullySpecifiedName: string
+  fullySpecifiedName: string,
+  options: { streaming?: boolean } = {}
 ): Promise<BaseChatModel> {
   const index = fullySpecifiedName.indexOf("/");
   if (index === -1) {
     // If there's no "/", assume it's just the model
-    return await initChatModel(fullySpecifiedName);
+    return await initChatModel(fullySpecifiedName, options);
   } else {
     const provider = fullySpecifiedName.slice(0, index);
     const model = fullySpecifiedName.slice(index + 1);
-    return await initChatModel(model, { modelProvider: provider });
+    return await initChatModel(model, {
+      modelProvider: provider,
+      streaming: options.streaming ?? false, // Default to false for streaming
+    });
   }
 }

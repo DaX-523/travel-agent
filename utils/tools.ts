@@ -37,12 +37,15 @@ function initializeTools(
         const tavilyResults = await tavilyTool.invoke(query);
         console.log("[FLOW] Received Tavily search results");
         const tavileParsedResults = JSON.parse(tavilyResults?.content);
-        // Get URLs for attribution
+
+        // Get URLs for attribution and potential scraping
+        console.log(tavileParsedResults);
         const sources = tavileParsedResults
-          .slice(0, 3)
-          .map(
-            (result: { url?: string }) => result.url || "https://example.com"
-          );
+          .slice(0, 2) // Increase to top 3 sources for more options
+          .map((result: { url?: string; title?: string }) => ({
+            url: result.url || "https://example.com",
+            title: result.title || "No title available",
+          }));
 
         // Extract specific location information from Tavily results
         let specificPlaces: string[] = [];
@@ -170,11 +173,16 @@ function initializeTools(
           response += `${index + 1}. ${description}\n\n`;
         });
 
-        // Add source attribution
-        response += `Based on web search results from:\n`;
-        sources.forEach((source: string) => {
-          response += `- ${source}\n`;
-        });
+        // Add source URLs with titles in a format that encourages scraping
+        response += `For more detailed information, you can explore these sources:\n\n`;
+        sources.forEach(
+          (source: { url: string; title: string }, index: number) => {
+            response += `[${index + 1}] ${source.title}: ${source.url}\n`;
+          }
+        );
+
+        // Add a hint about scraping for more details
+        response += `\nYou can use the scrapeWebsite tool on these URLs to get more specific details about attractions, activities, and travel tips.`;
 
         return response;
       } catch (error) {
@@ -199,7 +207,9 @@ function initializeTools(
 
 8. **Practical Tips**: Consider visiting during the dry season, use local transportation options, and respect cultural customs during your travels.
 
-Based on web search results (search engine temporarily unavailable, using general travel information).`;
+Based on web search results (search engine temporarily unavailable, using general travel information).
+
+Note: For more specific information, consider trying another search query or asking about specific aspects of the destination.`;
       }
     },
     {
@@ -213,19 +223,101 @@ Based on web search results (search engine temporarily unavailable, using genera
   );
 
   async function scrapeWebsite({ url }: { url: string }): Promise<string> {
-    console.log("[FLOW] scrape toool called for url: ", url);
-    const response = await fetch(url);
-    const text = response.text();
-    const truncatedContent = (await text).slice(0, 50000);
-    const p = INFO_PROMPT.replace(
-      "{info}",
-      JSON.stringify(state?.extractionSchema, null, 2)
-    )
-      .replace("{url}", url)
-      .replace("{content}", truncatedContent);
-    const model = loadChatModel(configuration.queryModel);
-    const content = (await model).invoke(p);
-    return getTextContent((await content).content);
+    console.log("[FLOW] scrape tool called for url: ", url);
+    try {
+      // Fetch the website content
+      const response = await fetch(url, {
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+        },
+      });
+
+      if (!response.ok) {
+        return `Error: Failed to fetch the website. Status: ${response.status}`;
+      }
+
+      const text = await response.text();
+
+      // Truncate and clean the content
+      let content = text.slice(0, 30000); // Smaller size to avoid model issues
+
+      // Extract just the main content by focusing on paragraph text
+      const paragraphRegex = /<p[^>]*>(.*?)<\/p>/gs;
+      const headingRegex = /<h[1-6][^>]*>(.*?)<\/h[1-6]>/gs;
+
+      let extractedText = "";
+      let paragraphMatches = [...content.matchAll(paragraphRegex)];
+      let headingMatches = [...content.matchAll(headingRegex)];
+
+      // Combine headings and paragraphs
+      const combined = [...headingMatches, ...paragraphMatches].sort((a, b) => {
+        return content.indexOf(a[0]) - content.indexOf(b[0]);
+      });
+
+      // Extract text from matches
+      combined.forEach((match) => {
+        const text = match[1].replace(/<[^>]*>/g, "").trim();
+        if (text) {
+          extractedText += text + "\n\n";
+        }
+      });
+
+      // If we couldn't extract text effectively, use a simple text extraction
+      if (extractedText.length < 100) {
+        extractedText = content
+          .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "")
+          .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, "")
+          .replace(/<[^>]*>/g, "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 8000);
+      }
+
+      // Use a simpler prompt for Groq model to avoid JSON parsing issues
+      const simplifiedPrompt = `
+        You are analyzing travel website content to extract useful information for a tourist.
+        Website URL: ${url}
+
+        Extract the key travel information from this content. Focus on:
+        1. Tourist attractions and landmarks
+        2. Popular places to visit
+        3. Travel tips and recommendations
+
+        Website content:
+        ${extractedText.slice(0, 8000)}
+
+        Provide a concise summary of the travel information from this website.
+
+        Also mention the url (comma separated) at the end of the reponse like this :
+        1. {url1}
+        2. {url2}
+`;
+
+      // Use the model with streaming disabled to avoid chunk parsing issues
+      const model = await loadChatModel(configuration.queryModel, {
+        streaming: false,
+      });
+
+      // Call the model with the simplified prompt
+      const result = await model.invoke([
+        {
+          role: "system",
+          content: "You are a helpful travel information extractor.",
+        },
+        {
+          role: "user",
+          content: simplifiedPrompt,
+        },
+      ]);
+
+      return getTextContent(result.content);
+    } catch (error: unknown) {
+      console.error("[FLOW] Error in scrape tool:", error);
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      return `Error scraping website: ${errorMessage}. Please try a different URL or search tool.`;
+    }
   }
   const scraperTool = tool(scrapeWebsite, {
     name: "scrapeWebsite",
@@ -235,7 +327,53 @@ Based on web search results (search engine temporarily unavailable, using genera
     }),
   });
 
-  return [searchTool, scraperTool];
+  // Add Info tool for handling the final formatted results
+  const infoTool = tool(
+    async ({ results }) => {
+      console.log("[FLOW] Info tool called with final results");
+
+      // Handle both string and object formats
+      let formattedResults = results;
+
+      // If it's an object, convert it to a string
+      if (typeof results === "object") {
+        try {
+          // Try to format as numbered list if it looks like one
+          if (
+            results &&
+            Object.keys(results).some((key) => /^\d+$/.test(key))
+          ) {
+            formattedResults = Object.entries(results)
+              .map(([num, text]) => `${num}. ${text}`)
+              .join("\n\n");
+          } else {
+            // Otherwise just stringify it
+            formattedResults = JSON.stringify(results, null, 2);
+          }
+        } catch (e) {
+          console.error("[FLOW] Error formatting Info tool results:", e);
+          formattedResults = String(results);
+        }
+      }
+
+      // Return the formatted results
+      return formattedResults;
+    },
+    {
+      name: "Info",
+      description:
+        "Tool for processing and finalizing travel information results",
+      schema: z.object({
+        results: z
+          .any()
+          .describe(
+            "The final formatted travel information results (can be a string or an object)"
+          ),
+      }),
+    }
+  );
+
+  return [searchTool, scraperTool, infoTool];
 }
 
 export const toolNode = async (

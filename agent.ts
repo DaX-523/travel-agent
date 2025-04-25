@@ -1,23 +1,16 @@
 import { Annotation, StateGraph } from "@langchain/langgraph";
-import { ToolNode, toolsCondition } from "@langchain/langgraph/prebuilt";
-import { OpenAIEmbeddings, ChatOpenAI } from "@langchain/openai";
+
 import { MongoClient } from "mongodb";
-import { Document } from "@langchain/core/documents";
 import {
   AIMessage,
   BaseMessage,
   HumanMessage,
   ToolMessage,
 } from "@langchain/core/messages";
-import {
-  ChatPromptTemplate,
-  MessagesPlaceholder,
-} from "@langchain/core/prompts";
+
 import { tool } from "@langchain/core/tools";
-import { MongoDBAtlasVectorSearch } from "@langchain/mongodb";
 import { z } from "zod";
 import { MongoDBSaver } from "@langchain/langgraph-checkpoint-mongodb";
-import { CohereEmbeddings } from "@langchain/cohere";
 import { RunnableConfig } from "@langchain/core/runnables";
 import { formatDocs, getMessageText, InfoIsSatisfactory } from "./utils/util";
 import {
@@ -38,6 +31,7 @@ import {
   RESPONSE_SYSTEM_PROMPT_TEMPLATE,
 } from "./utils/prompts";
 import "dotenv/config";
+import { responseFallbackTemplate } from "./utils/templates";
 
 export type AnyRecord = Record<string, any>;
 
@@ -73,7 +67,33 @@ async function callAgentModel(
   const p = configuration.prompt
     .replace("{info}", JSON.stringify(state.extractionSchema, null, 2))
     .replace("{topic}", state.topic);
-  const messages = [{ role: "user", content: p }, ...state.messages];
+
+  // If we're coming from retrieve with no results or irrelevant results,
+  // add a directive to use search_tool first
+  let messages = [];
+
+  // Check if we should direct the agent to use search_tool
+  const shouldDirectSearch =
+    // Only add the search directive if we haven't already used search_tool
+    !state.messages.some(
+      (msg) =>
+        msg._getType() === "tool" && (msg as ToolMessage).name === "search_tool"
+    );
+
+  if (shouldDirectSearch) {
+    // Coming from retrieve with no/irrelevant results - use directive to search
+    messages = [
+      { role: "user", content: p },
+      ...state.messages,
+      {
+        role: "user",
+        content: `Please use the search_tool to find specific information about "${state.topic}" from the web.`,
+      },
+    ];
+  } else {
+    // Normal case - pass all messages
+    messages = [{ role: "user", content: p }, ...state.messages];
+  }
 
   // Next, we'll call the model.
   const response: AIMessage = await model.invoke(messages);
@@ -218,7 +238,7 @@ If you don't think it is good, you should be very specific about what could be i
         typeof message.content === "string"
       ) {
         scrapedContent.push(message.content);
-        if (scrapedContent.length >= 3) break; // Get content from up to 3 websites
+        if (scrapedContent.length >= 2) break; // Get content from up to 2 websites
       }
     }
 
@@ -278,21 +298,7 @@ If you don't think it is good, you should be very specific about what could be i
         // Not enough specific locations found, use template format
         travelInfo = `Here are the top places to visit in ${destination}:
 
-1. **Major Cities**: Explore the urban centers with their unique architecture, museums, historical sites, and vibrant culture.
-
-2. **Natural Wonders**: Discover the breathtaking landscapes including mountains, beaches, forests, and national parks.
-
-3. **Historical Sites**: Visit ancient temples, colonial buildings, museums, and cultural landmarks throughout the region.
-
-4. **Local Experiences**: Immerse yourself in local culture through food tours, traditional performances, markets, and community-based tourism.
-
-5. **Outdoor Activities**: Enjoy hiking, water sports, wildlife watching, and adventure activities suited to the local geography.
-
-6. **Culinary Highlights**: Sample regional specialties, street food, and local delicacies that define the destination's cuisine.
-
-7. **Hidden Gems**: Explore off-the-beaten-path locations away from typical tourist crowds for a more authentic experience.
-
-8. **Practical Tips**: Consider visiting during the dry season, use local transportation options, and respect cultural customs during your travels.`;
+${responseFallbackTemplate}`;
       }
 
       // Add source references
@@ -303,36 +309,27 @@ If you don't think it is good, you should be very specific about what could be i
       console.log("[FLOW] Creating generic formatted response for:", query);
       travelInfo = `Here are the top places to visit in ${query}:
 
-1. **Major Cities**: Explore the urban centers with their unique architecture, museums, historical sites, and vibrant culture.
-
-2. **Natural Wonders**: Discover the breathtaking landscapes including mountains, beaches, forests, and national parks.
-
-3. **Historical Sites**: Visit ancient temples, colonial buildings, museums, and cultural landmarks throughout the region.
-
-4. **Local Experiences**: Immerse yourself in local culture through food tours, traditional performances, markets, and community-based tourism.
-
-5. **Outdoor Activities**: Enjoy hiking, water sports, wildlife watching, and adventure activities suited to the local geography.
-
-6. **Culinary Highlights**: Sample regional specialties, street food, and local delicacies that define the destination's cuisine.
-
-7. **Hidden Gems**: Explore off-the-beaten-path locations away from typical tourist crowds for a more authentic experience.
-
-8. **Practical Tips**: Consider visiting during the dry season, use local transportation options, and respect cultural customs during your travels.`;
+${responseFallbackTemplate}`;
     }
   }
 
   if (response.is_satisfactory && presumedInfo) {
     console.log("[FLOW] Info deemed satisfactory by reflection");
 
+    // Make sure we're creating a proper tool message with valid tool_call_id
+    const toolCallId = lastMessage.tool_calls?.[0]?.id || "";
+    if (!toolCallId) {
+      console.error("[FLOW] Missing tool call ID in last message");
+    }
+
     // Now we return the actual travel information alongside the success message
     return {
       info: presumedInfo,
       messages: [
         new ToolMessage({
-          tool_call_id: lastMessage.tool_calls?.[0]?.id || "",
+          tool_call_id: toolCallId,
           content: travelInfo,
           name: "Info",
-          artifact: response,
           status: "success",
         }),
       ],
@@ -350,7 +347,6 @@ If you don't think it is good, you should be very specific about what could be i
           tool_call_id: lastMessage.tool_calls?.[0]?.id || "",
           content: `Unsatisfactory response:\n${response.improvement_instructions}`,
           name: "Info",
-          artifact: response,
           status: "error",
         }),
       ],
@@ -431,18 +427,13 @@ function routeAfterChecker(
 }
 
 /**
- * Determines the next node after query generation based on the complexity and type of the query.
- *
- * @param state - The current state of the workflow.
- * @returns "retrieve" for simple factual queries that can be directly answered with vector retrieval,
- *          "callAgentModel" for complex queries requiring reasoning or multi-step planning.
+ * Modified to always try retrieval first before using the agent.
+ * This ensures we check our database before resorting to web search.
  */
-function routeAfterQueryGen(
-  state: typeof StateAnnotation.State
-): "retrieve" | "callAgentModel" {
+function routeAfterQueryGen(state: typeof StateAnnotation.State): "retrieve" {
   const query = state.queries[state.queries.length - 1];
 
-  // Simple detection of complex queries needing agent reasoning
+  // Log query patterns for debugging
   const complexPatterns = [
     /\bcompare\b/i,
     /\bbest\b/i,
@@ -464,16 +455,302 @@ function routeAfterQueryGen(
     /\bmultiple\b/i,
   ];
 
-  // If the query matches any complex pattern, route to agent
-  if (complexPatterns.some((pattern) => pattern.test(query))) {
-    console.log("[FLOW] Complex query detected: Routing to callAgentModel");
+  // For debugging, check if query matches complex patterns
+  const matchedPatterns = complexPatterns
+    .filter((pattern) => pattern.test(query))
+    .map((pattern) => pattern.toString());
+
+  if (matchedPatterns.length > 0) {
+    console.log(
+      `[FLOW] Query matches complex patterns: ${matchedPatterns.join(", ")}`
+    );
+  }
+
+  // Always try retrieval first regardless of query complexity
+  console.log("[FLOW] Always routing to retrieve first to check database");
+  return "retrieve";
+}
+
+// Modify the routeAfterRetrieve function to better check document relevance
+function routeAfterRetrieve(
+  state: typeof GraphState.State
+): "respond" | "callAgentModel" {
+  const query = state.queries[state.queries.length - 1];
+
+  // If no documents were found, route to the agent to use web search
+  if (state.retrievedDocs.length === 0) {
+    console.log("[FLOW] No documents found, routing to agent for web search");
     return "callAgentModel";
   }
 
-  // For simple factual queries, use direct retrieval
-  console.log("[FLOW] Simple factual query detected: Routing to retrieve");
-  return "retrieve";
+  // Check document relevance by extracting key terms from the query
+  const queryKeywords = query
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((word) => word.length > 3)
+    .filter(
+      (word) =>
+        ![
+          "what",
+          "where",
+          "when",
+          "how",
+          "this",
+          "that",
+          "with",
+          "from",
+          "about",
+          "places",
+          "place",
+          "visit",
+          "travel",
+          "want",
+          "need",
+          "tell",
+          "know",
+          "would",
+          "could",
+          "should",
+          "looking",
+          "which",
+          "there",
+          "they",
+          "their",
+          "some",
+          "good",
+          "best",
+          "great",
+          "nice",
+          "find",
+          "show",
+          "give",
+          "help",
+        ].includes(word)
+    );
+
+  // Get location names from the query (often proper nouns)
+  const locationPattern = /\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b/g;
+  const locationMatches = query.match(locationPattern) || [];
+  const locations = locationMatches.map((loc) => loc.toLowerCase());
+
+  // Log the keywords and locations for debugging
+  console.log(`[FLOW] Query keywords: ${queryKeywords.join(", ")}`);
+  console.log(`[FLOW] Potential locations: ${locations.join(", ")}`);
+
+  // Extract all document text for relevance checking
+  const docsText = state.retrievedDocs
+    .map((doc) => doc.pageContent.toLowerCase())
+    .join(" ");
+
+  // Check if any location is mentioned in the documents
+  const locationRelevant =
+    locations.length > 0 && locations.some((loc) => docsText.includes(loc));
+
+  // Relax keyword matching - only require 1 keyword match if we have any
+  const keywordMatches = queryKeywords.filter((keyword) =>
+    docsText.includes(keyword.toLowerCase())
+  );
+
+  // Document is relevant if either location matches OR at least one keyword matches
+  const keywordRelevant = keywordMatches.length > 0;
+
+  // Document is relevant if either location or keywords match
+  const isRelevant = locationRelevant || keywordRelevant;
+
+  console.log(
+    `[FLOW] Document relevance: ${isRelevant ? "Relevant" : "Not relevant"}`
+  );
+  console.log(
+    `[FLOW] Location match: ${locationRelevant}, Keyword matches: ${keywordMatches.length}/${queryKeywords.length}`
+  );
+
+  if (isRelevant) {
+    console.log("[FLOW] Relevant documents found, routing to respond");
+    return "respond";
+  } else {
+    console.log(
+      "[FLOW] Documents not relevant enough, routing to agent for web search"
+    );
+
+    // Don't modify the state here - it breaks the tool calling flow
+
+    return "callAgentModel";
+  }
 }
+
+// Add a function to route after respond
+function routeAfterRespond(
+  state: typeof GraphState.State
+): "callAgentModel" | "__end__" {
+  // Get the last message
+  const lastMessage = state.messages[state.messages.length - 1];
+
+  // If the last message is asking to use search_tool, route to callAgentModel
+  if (
+    lastMessage._getType() === "human" &&
+    typeof lastMessage.content === "string" &&
+    lastMessage.content.includes("Please use the search_tool")
+  ) {
+    console.log(
+      "[FLOW] Respond asking to use search_tool, routing to callAgentModel"
+    );
+    return "callAgentModel";
+  }
+
+  console.log("[FLOW] Normal response, ending workflow");
+  return "__end__";
+}
+
+const SearchQuery = z.object({
+  query: z.string().describe("Search the indexed documents for a query."),
+});
+async function generateQuery(
+  state: typeof GraphState.State,
+  config?: RunnableConfig
+): Promise<typeof GraphState.Update> {
+  console.log("[FLOW] Starting generateQuery node");
+  const messages = state.messages;
+  // console.log(messages, "messages");
+  if (messages.length === 1) {
+    const humanInput = getMessageText(messages[messages.length - 1]);
+    console.log(
+      `[FLOW] First message, using direct input as query: "${humanInput.substring(
+        0,
+        50
+      )}${humanInput.length > 50 ? "..." : ""}"`
+    );
+    return {
+      queries: [humanInput],
+    };
+  } else {
+    const configuration = ensureConfiguration(config);
+    console.log("[FLOW] Generating refined search query from conversation");
+    // Feel free to customize the prompt, model, and other logic!
+    const systemMessage = configuration.querySystemPromptTemplate
+      .replace("{queries}", (state.queries || []).join("\n- "))
+      .replace("{systemTime}", new Date().toISOString());
+
+    const messageValue = [
+      { role: "system", content: systemMessage },
+      ...state.messages,
+    ];
+    const model = (
+      await loadChatModel(configuration.responseModel)
+    ).withStructuredOutput(SearchQuery);
+
+    const generated = await model.invoke(messageValue);
+    console.log(`[FLOW] Generated query: "${generated.query}"`);
+    return {
+      queries: [generated.query],
+    };
+  }
+}
+
+async function retrieve(
+  state: typeof GraphState.State,
+  config: RunnableConfig
+): Promise<typeof GraphState.Update> {
+  console.log("[FLOW] Starting retrieve node");
+  const my_retriever = await makeRetriever(config);
+  const query = state.queries[state.queries.length - 1];
+  console.log(`[FLOW] Retrieving documents for query: "${query}"`);
+  const docs = await my_retriever.invoke(query);
+  console.log(`[FLOW] Retrieved ${docs.length} documents`);
+
+  // If no documents found, we should route to the agent to use web search
+  if (docs.length === 0) {
+    console.log(
+      "[FLOW] No documents found in the database, will use web search"
+    );
+    // Add a message prompting the agent to use web search
+    return {
+      retrievedDocs: docs,
+      messages: [
+        new HumanMessage({
+          content: `No information about "${query}" was found in our database. Please use the search_tool to find information about this on the web.`,
+        }),
+      ],
+    };
+  }
+
+  // When documents are found, don't add any message yet - relevance will be checked in routeAfterRetrieve
+  // If they're not relevant, the flow will route to callAgentModel with no extra message
+  return {
+    retrievedDocs: docs,
+    // Don't add any messages here - those will be set at the routing decision
+  };
+}
+
+async function respond(
+  state: typeof GraphState.State,
+  config: RunnableConfig
+): Promise<typeof GraphState.Update> {
+  console.log("[FLOW] Starting respond node");
+  const configuration = ensureConfiguration(config);
+
+  // Get the query and format retrieved documents
+  const query = state.queries[state.queries.length - 1];
+  const retrievedDocs = formatDocs(state.retrievedDocs);
+
+  // Skip the secondary relevance check - if we're here, we've already determined
+  // the documents are worth responding with
+  console.log(`[FLOW] Using retrieved documents to generate response`);
+
+  const model = await loadChatModel(configuration.responseModel);
+
+  // Feel free to customize the prompt, model, and other logic!
+  const systemMessage = configuration.responseSystemPromptTemplate
+    .replace("{retrievedDocs}", retrievedDocs)
+    .replace("{systemTime}", new Date().toISOString());
+  const messageValue = [
+    { role: "system", content: systemMessage },
+    ...state.messages,
+  ];
+  const response = await model.invoke(messageValue);
+  console.log("[FLOW] Response generated successfully");
+  // We return a list, because this will get added to the existing list
+  return { messages: [response] };
+}
+
+const workflow = new StateGraph(
+  {
+    stateSchema: GraphState,
+    input: InputStateAnnotation,
+  },
+  ConfigurationAnnotation
+)
+  .addNode("generateQuery", generateQuery)
+  .addNode("retrieve", retrieve)
+  .addNode("callAgentModel", callAgentModel)
+  .addNode("tools", toolNode)
+  .addNode("reflect", reflect)
+  .addNode("respond", respond)
+
+  .addEdge("__start__", "generateQuery")
+  .addConditionalEdges("generateQuery", routeAfterQueryGen)
+
+  // Retrieval path with conditional routing after retrieve
+  .addConditionalEdges("retrieve", routeAfterRetrieve)
+
+  // Add conditional routing after respond
+  .addConditionalEdges("respond", routeAfterRespond)
+
+  // Agent path
+  .addConditionalEdges("callAgentModel", routeAfterAgent) // Route to tools or reflect
+  .addEdge("tools", "callAgentModel") // Loop back after tool use
+  .addConditionalEdges("reflect", routeAfterChecker) // Go to respond or back to agent
+  .addEdge("respond", "__end__"); // Always end at respond
+
+const checkpointer = new MongoDBSaver({
+  client,
+  dbName: "AI-Travel-Agent",
+});
+app = workflow.compile({
+  checkpointer,
+  interruptBefore: [],
+  interruptAfter: [],
+});
+app.name = "Travel Agent";
 
 export default async function callAgent(
   client: MongoClient,
@@ -481,309 +758,9 @@ export default async function callAgent(
   threadId: string
 ) {
   try {
-    // console.log("query", query);
-    const db = client.db("AI-Travel-Agent");
-    const collection = db.collection("places");
+    console.log("[FLOW] Processing travel query through LangGraph agent");
 
-    const lookupTool = tool(
-      async ({ query, n = 10 }) => {
-        console.log("Lookup Tool");
-        const dbConfig = {
-          collection,
-          indexName: "vector_index",
-          textKey: "embedding_text",
-          embeddingKey: "embedding",
-        };
-
-        const vectorStore = new MongoDBAtlasVectorSearch(
-          new CohereEmbeddings({ model: "embed-english-v3.0" }),
-          dbConfig
-        );
-        const result = await vectorStore.similaritySearchWithScore(query, n);
-
-        return JSON.stringify(result);
-      },
-      {
-        name: "places_lookup",
-        description: "Place to search for the agent for suitale search results",
-        schema: z.object({
-          query: z.string().describe("The Search Query"),
-          n: z
-            .number()
-            .optional()
-            .default(10)
-            .describe("Number of results to return"),
-        }),
-      }
-    );
-
-    // Now using the searchTool from utils/tools.ts
-    const tools = [lookupTool, ...MODEL_TOOLS];
-    const toolNode1 = new ToolNode<typeof GraphState.State>(tools);
-
-    const chatModel = new ChatOpenAI({
-      model: "gpt-4o",
-      temperature: 0.7,
-    }).bindTools(tools);
-    const SearchQuery = z.object({
-      query: z.string().describe("Search the indexed documents for a query."),
-    });
-    async function generateQuery(
-      state: typeof GraphState.State,
-      config?: RunnableConfig
-    ): Promise<typeof GraphState.Update> {
-      console.log("[FLOW] Starting generateQuery node");
-      const messages = state.messages;
-      // console.log(messages, "messages");
-      if (messages.length === 1) {
-        const humanInput = getMessageText(messages[messages.length - 1]);
-        console.log(
-          `[FLOW] First message, using direct input as query: "${humanInput.substring(
-            0,
-            50
-          )}${humanInput.length > 50 ? "..." : ""}"`
-        );
-        return {
-          queries: [humanInput],
-        };
-      } else {
-        const configuration = ensureConfiguration(config);
-        console.log("[FLOW] Generating refined search query from conversation");
-        // Feel free to customize the prompt, model, and other logic!
-        const systemMessage = configuration.querySystemPromptTemplate
-          .replace("{queries}", (state.queries || []).join("\n- "))
-          .replace("{systemTime}", new Date().toISOString());
-
-        const messageValue = [
-          { role: "system", content: systemMessage },
-          ...state.messages,
-        ];
-        const model = (
-          await loadChatModel(configuration.responseModel)
-        ).withStructuredOutput(SearchQuery);
-
-        const generated = await model.invoke(messageValue);
-        console.log(`[FLOW] Generated query: "${generated.query}"`);
-        return {
-          queries: [generated.query],
-        };
-      }
-    }
-
-    async function retrieve(
-      state: typeof GraphState.State,
-      config: RunnableConfig
-    ): Promise<typeof GraphState.Update> {
-      console.log("[FLOW] Starting retrieve node");
-      const my_retriever = await makeRetriever(config);
-      const query = state.queries[state.queries.length - 1];
-      console.log(`[FLOW] Retrieving documents for query: "${query}"`);
-      const docs = await my_retriever.invoke(query);
-      console.log(`[FLOW] Retrieved ${docs.length} documents`);
-
-      // If no documents found, we should route to the agent to use web search
-      if (docs.length === 0) {
-        console.log(
-          "[FLOW] No documents found in the database, will use web search"
-        );
-        // Add a message prompting the agent to use web search
-        return {
-          retrievedDocs: docs,
-          messages: [
-            new HumanMessage({
-              content: `No information about "${query}" was found in our database. Please use the search_tool to find information about this on the web.`,
-            }),
-          ],
-        };
-      }
-
-      return { retrievedDocs: docs };
-    }
-
-    async function respond(
-      state: typeof GraphState.State,
-      config: RunnableConfig
-    ): Promise<typeof GraphState.Update> {
-      console.log("[FLOW] Starting respond node");
-      const configuration = ensureConfiguration(config);
-
-      // Get the query and check document relevance
-      const query = state.queries[state.queries.length - 1];
-      const retrievedDocs = formatDocs(state.retrievedDocs);
-
-      // Check if documents contain relevant information about the query
-      const containsQuery = query
-        .toLowerCase()
-        .split(" ")
-        .filter(
-          (word) =>
-            word.length > 3 &&
-            ![
-              "what",
-              "where",
-              "when",
-              "how",
-              "this",
-              "that",
-              "with",
-              "from",
-              "about",
-              "places",
-              "place",
-              "visit",
-              "travel",
-            ].includes(word)
-        );
-
-      const isRelevant =
-        state.retrievedDocs.length > 0 &&
-        containsQuery.some((keyword) =>
-          retrievedDocs.toLowerCase().includes(keyword.toLowerCase())
-        );
-
-      console.log(`[FLOW] Query keywords: ${containsQuery.join(", ")}`);
-      console.log(`[FLOW] Documents relevant to query: ${isRelevant}`);
-
-      // If documents are not relevant, route to agent for web search
-      if (!isRelevant) {
-        console.log(
-          "[FLOW] Retrieved documents not relevant to query, routing to search tool"
-        );
-        return {
-          messages: [
-            new HumanMessage({
-              content: `The information in our database doesn't match what you're looking for regarding "${query}". Please use the search_tool to find this information on the web.`,
-            }),
-          ],
-        };
-      }
-
-      const model = await loadChatModel(configuration.responseModel);
-
-      // Feel free to customize the prompt, model, and other logic!
-      const systemMessage = configuration.responseSystemPromptTemplate
-        .replace("{retrievedDocs}", retrievedDocs)
-        .replace("{systemTime}", new Date().toISOString());
-      const messageValue = [
-        { role: "system", content: systemMessage },
-        ...state.messages,
-      ];
-      const response = await model.invoke(messageValue);
-      console.log("[FLOW] Response generated successfully");
-      // We return a list, because this will get added to the existing list
-      return { messages: [response] };
-    }
-
-    async function callModel(state: typeof GraphState.State) {
-      const prompt = ChatPromptTemplate.fromMessages([
-        [
-          "system",
-          `You are a helpful AI assistant, collaborating with other assistants. Use the provided tools to progress towards answering the question. If you are unable to fully answer, that's OK, another assistant with different tools will help where you left off. Execute what you can to make progress. If you or any of the other assistants have the final answer or deliverable, prefix your response with FINAL ANSWER so the team knows to stop. If no relevant locations are found in the database, clearly inform the user instead of making assumptions. You have access to the following tools: {tool_names}.\n{system_message}\nCurrent time: {time}.`,
-        ],
-        new MessagesPlaceholder("messages"),
-      ]);
-
-      const formattedPrompt = await prompt.formatMessages({
-        system_message: "You are a helpful Travel Agent.",
-        time: new Date().toISOString(),
-        tool_names: tools.map((tool) => tool.name).join(", "),
-        messages: state.messages,
-      });
-      const result = await chatModel.invoke(formattedPrompt);
-      return { messages: [result] };
-    }
-    //raw toolsCondition
-    function shouldContinue(state: typeof GraphState.State): string {
-      const messages = state.messages;
-      const lastMessage = messages[messages.length - 1] as AIMessage;
-
-      if (
-        lastMessage &&
-        lastMessage.tool_calls &&
-        lastMessage.tool_calls.length > 0
-      )
-        return "tools";
-      return "__end__";
-    }
-
-    // Modify the routeAfterRetrieve function
-    function routeAfterRetrieve(
-      state: typeof GraphState.State
-    ): "respond" | "callAgentModel" {
-      // If no documents were found, route to the agent to use web search
-      if (state.retrievedDocs.length === 0) {
-        console.log(
-          "[FLOW] No documents found, routing to agent for web search"
-        );
-        return "callAgentModel";
-      }
-
-      console.log("[FLOW] Documents found, routing to respond");
-      return "respond";
-    }
-
-    // Add a function to route after respond
-    function routeAfterRespond(
-      state: typeof GraphState.State
-    ): "callAgentModel" | "__end__" {
-      // Get the last message
-      const lastMessage = state.messages[state.messages.length - 1];
-
-      // If the last message is asking to use search_tool, route to callAgentModel
-      if (
-        lastMessage._getType() === "human" &&
-        typeof lastMessage.content === "string" &&
-        lastMessage.content.includes("Please use the search_tool")
-      ) {
-        console.log(
-          "[FLOW] Respond asking to use search_tool, routing to callAgentModel"
-        );
-        return "callAgentModel";
-      }
-
-      console.log("[FLOW] Normal response, ending workflow");
-      return "__end__";
-    }
-
-    const workflow = new StateGraph(
-      {
-        stateSchema: GraphState,
-        input: InputStateAnnotation,
-      },
-      ConfigurationAnnotation
-    )
-      .addNode("generateQuery", generateQuery)
-      .addNode("retrieve", retrieve)
-      .addNode("callAgentModel", callAgentModel)
-      .addNode("tools", toolNode)
-      .addNode("reflect", reflect)
-      .addNode("respond", respond)
-
-      .addEdge("__start__", "generateQuery")
-      .addConditionalEdges("generateQuery", routeAfterQueryGen)
-
-      // Retrieval path with conditional routing after retrieve
-      .addConditionalEdges("retrieve", routeAfterRetrieve)
-
-      // Add conditional routing after respond
-      .addConditionalEdges("respond", routeAfterRespond)
-
-      // Agent path
-      .addConditionalEdges("callAgentModel", routeAfterAgent) // Route to tools or reflect
-      .addEdge("tools", "callAgentModel") // Loop back after tool use
-      .addConditionalEdges("reflect", routeAfterChecker) // Go to respond or back to agent
-      .addEdge("respond", "__end__"); // Always end at respond
-
-    const checkpointer = new MongoDBSaver({
-      client,
-      dbName: "AI-Travel-Agent",
-    });
-    app = workflow.compile({
-      checkpointer,
-      interruptBefore: [],
-      interruptAfter: [],
-    });
-    app.name = "Travel Agent";
+    // Process the travel query through the LangGraph agent
     const finalState = await app.invoke(
       {
         topic: query,
@@ -797,9 +774,9 @@ export default async function callAgent(
         configurable: {
           thread_id: threadId,
           responseSystemPromptTemplate: RESPONSE_SYSTEM_PROMPT_TEMPLATE,
-          responseModel: "openai/gpt-4o",
+          responseModel: "groq/llama3-70b-8192",
           querySystemPromptTemplate: QUERY_SYSTEM_PROMPT_TEMPLATE,
-          queryModel: "openai/gpt-4o",
+          queryModel: "groq/llama3-70b-8192",
           prompt: MAIN_PROMPT,
           maxSearchResults: 5,
           maxInfoToolCalls: 3,
@@ -817,25 +794,4 @@ export default async function callAgent(
     process.exit(1);
   }
 }
-
-export async function getApp() {
-  // Return existing app if already initialized
-  if (app) return app;
-
-  try {
-    console.log("[LANGGRAPH] Initializing app...");
-
-    // Create a dummy query to initialize everything
-    const dummyQuery = "initialize";
-    const dummyThreadId = "initialization-thread";
-
-    // This will initialize the app variable
-    await callAgent(client, dummyQuery, dummyThreadId);
-
-    console.log("[LANGGRAPH] App initialized successfully");
-    return app;
-  } catch (error) {
-    console.error("[LANGGRAPH] Error initializing app:", error);
-    throw error;
-  }
-}
+export { app };
