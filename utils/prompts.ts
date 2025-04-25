@@ -76,6 +76,11 @@ Analyze the user's query and classify it into one of these categories:
 1. "greeting" - A simple hello, thanks, goodbye, or other conversational greeting/closing
 2. "non_travel" - A query that is not related to travel, tourism, vacations, destinations, or hospitality
 3. "travel" - A query related to travel planning, destinations, accommodations, attractions, etc.
+4. "conversation_history" - A query asking about previous conversations, what was discussed earlier, or anything related to remembering past interactions
+
+Pay special attention to queries that ask about remembering, recalling, or questions about previous conversations.
+Examples of conversation history queries include "what did we talk about?", "do you remember what I asked you?", 
+"what places did you recommend?", or any query asking you to recall previous parts of the conversation.
 
 Provide your classification with confidence (0-1) and a brief explanation.`;
 
