@@ -248,7 +248,7 @@ export async function modelAnalyzeQuery(
     };
   }
 
-  const model = await loadChatModel("groq/llama3-70b-8192");
+  const model = await loadChatModel("groq/llama-3.3-70b-versatile");
   const boundModel = model.withStructuredOutput(QueryClassification);
 
   const response = await boundModel.invoke([
@@ -283,7 +283,7 @@ export async function modelAnalyzeQuery(
  * Handle a simple greeting with the chat model directly
  */
 export async function handleGreeting(query: string): Promise<string> {
-  const model = await loadChatModel("groq/llama3-70b-8192");
+  const model = await loadChatModel("groq/llama-3.3-70b-versatile");
   const response = await model.invoke([
     {
       role: "system",
@@ -301,7 +301,7 @@ export async function handleGreeting(query: string): Promise<string> {
  * Handle a non-travel query with a polite rejection
  */
 export async function handleNonTravelQuery(query: string): Promise<string> {
-  const model = await loadChatModel("groq/llama3-70b-8192");
+  const model = await loadChatModel("groq/llama-3.3-70b-versatile");
   const response = await model.invoke([
     {
       role: "system",
@@ -381,7 +381,7 @@ export async function handleConversationHistoryQuery(
     }
 
     // Load the model for summarization
-    const model = await loadChatModel("groq/llama3-70b-8192");
+    const model = await loadChatModel("groq/llama-3.3-70b-versatile");
 
     // Create a summary of the conversation
     const conversation = previousMessages

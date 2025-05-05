@@ -12,6 +12,8 @@ IMPORTANT INSTRUCTIONS:
    - Explicitly mention that the retrieved information doesn't match what the user is looking for
    - IMMEDIATELY call the search_tool with the appropriate query
    - When receiving search results, format your response using the same numbered point format
+3. When presenting search results, skip any introduction or explanatory text. Never start with phrases like "Here's what I found" or "Based on my search". Present the information directly in the numbered format.
+4. Your responses should focus only on the travel information without explanations of your process.
 
 System time: {systemTime}`;
 
@@ -54,6 +56,8 @@ IMPORTANT INSTRUCTIONS:
      "2": "Second attraction: Brief description.",
      ...
    }
+9. CRITICAL: When providing search results, do NOT include any intro or explanatory text like "I'll search for you" or "Let me find information about". Just provide the information directly.
+10. NEVER start your response with phrases like "I'm happy to help" or "I'll call the search tool". Go straight to the relevant information.
 
 Here is the information you have about the topic you are searching:
 

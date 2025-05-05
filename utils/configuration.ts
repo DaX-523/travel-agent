@@ -129,10 +129,10 @@ export function ensureConfiguration(
     responseSystemPromptTemplate:
       configurable.responseSystemPromptTemplate ||
       RESPONSE_SYSTEM_PROMPT_TEMPLATE,
-    responseModel: configurable.responseModel || "groq/llama3-70b-8192",
+    responseModel: configurable.responseModel || "groq/llama-3.3-70b-versatile",
     querySystemPromptTemplate:
       configurable.querySystemPromptTemplate || QUERY_SYSTEM_PROMPT_TEMPLATE,
-    queryModel: configurable.queryModel || "groq/llama3-70b-8192",
+    queryModel: configurable.queryModel || "groq/llama-3.3-70b-versatile",
     prompt: configurable.prompt ?? MAIN_PROMPT,
     maxSearchResults: configurable.maxSearchResults ?? 5,
     maxInfoToolCalls: configurable.maxInfoToolCalls ?? 3,
@@ -148,18 +148,46 @@ export function ensureConfiguration(
  */
 export async function loadChatModel(
   fullySpecifiedName: string,
-  options: { streaming?: boolean } = {}
+  options: { streaming?: boolean; toolHandling?: "none" | "required" } = {}
 ): Promise<BaseChatModel> {
+  // Ensure streaming is disabled by default
+  const defaultOptions = {
+    streaming: false,
+    toolHandling: "none",
+  };
+
+  const mergedOptions = { ...defaultOptions, ...options };
+
   const index = fullySpecifiedName.indexOf("/");
   if (index === -1) {
     // If there's no "/", assume it's just the model
-    return await initChatModel(fullySpecifiedName, options);
+    return await initChatModel(fullySpecifiedName, mergedOptions);
   } else {
     const provider = fullySpecifiedName.slice(0, index);
     const model = fullySpecifiedName.slice(index + 1);
+
+    if (provider === "groq") {
+      // For Groq models, ensure we set up proper formatting for tool use
+      try {
+        // Simply use the initChatModel function we already have for consistency
+        return await initChatModel(model, {
+          modelProvider: provider,
+          ...mergedOptions,
+          // Add specific Groq configurations
+          modelKwargs:
+            mergedOptions.toolHandling === "required"
+              ? { response_format: { type: "json_object" } }
+              : { response_format: { type: "text" } },
+        });
+      } catch (error) {
+        console.error("[CONFIG] Error initializing Groq model:", error);
+        throw error;
+      }
+    }
+
     return await initChatModel(model, {
       modelProvider: provider,
-      streaming: options.streaming ?? false, // Default to false for streaming
+      ...mergedOptions,
     });
   }
 }

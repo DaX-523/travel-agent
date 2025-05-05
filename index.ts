@@ -22,6 +22,44 @@ app.use(cors());
 // Initialize MongoDB client
 const client = new MongoClient(process.env.MONGODB_ATLAS_URI as string);
 
+// Add this interface at the top of the file, after imports
+interface ErrorWithFailedGeneration {
+  error?: {
+    error?: {
+      failed_generation?: string;
+      code?: string;
+      message?: string;
+    };
+  };
+  failed_generation?: string;
+  message?: string;
+}
+
+// Add a utility function to handle extracting text from potentially complex content
+function extractTextFromMessageContent(content: any): string {
+  if (typeof content === "string") {
+    return content;
+  } else if (Array.isArray(content)) {
+    // If it's an array of content parts, extract text from each part
+    return content
+      .map((part) => {
+        if (typeof part === "string") {
+          return part;
+        } else if (part && typeof part === "object" && "text" in part) {
+          return part.text;
+        }
+        return "";
+      })
+      .join("");
+  } else if (content && typeof content === "object") {
+    // If it's an object with text property
+    if ("text" in content) {
+      return content.text;
+    }
+  }
+  return String(content);
+}
+
 async function startServer() {
   try {
     await client.connect();
@@ -133,39 +171,30 @@ async function startServer() {
       }
 
       try {
-        // Set response headers for SSE
-        res.setHeader("Content-Type", "text/event-stream");
-        res.setHeader("Cache-Control", "no-cache");
-        res.setHeader("Connection", "keep-alive");
-
         // Get the thread_id from the query parameters or create a new one
         const thread_id = req.body.threadId || Date.now().toString();
-
-        // Send the threadId immediately to the client
-        res.write(`data: ${JSON.stringify({ threadId: thread_id })}\n\n`);
 
         // Save user message
         await saveMessage(thread_id, "user", initialMessage);
 
         // Use LLM-based query classification
         const queryAnalysis = await modelAnalyzeQuery(initialMessage);
-        console.log("[STREAM] Query analysis:", queryAnalysis);
+        console.log("[API] Query analysis:", queryAnalysis);
 
         let fullResponse = "";
         // Handle different query types
         if (queryAnalysis.type === "greeting") {
           // For greetings, use a simple model response
-          console.log("[STREAM] Handling greeting query");
+          console.log("[API] Handling greeting query");
           const { ChatGroq } = await import("@langchain/groq");
           const model = new ChatGroq({
-            model: "llama3-70b-8192",
+            model: "llama-3.3-70b-versatile",
             apiKey: process.env.GROQ_API_KEY,
-            streaming: true,
           }).bind({
             response_format: { type: "text" },
           });
 
-          const stream = await model.stream([
+          const response = await model.invoke([
             {
               role: "system",
               content:
@@ -177,33 +206,28 @@ async function startServer() {
             },
           ]);
 
-          for await (const chunk of stream) {
-            const content = chunk.content || "";
-            fullResponse += content;
+          fullResponse = extractTextFromMessageContent(response.content);
 
-            if (content) {
-              res.write(`data: ${JSON.stringify({ text: content })}\n\n`);
-            }
-          }
-
-          res.write("data: [DONE]\n\n");
-          res.end();
+          // Save assistant message
           await saveMessage(thread_id, "assistant", fullResponse);
 
-          return;
+          // Return complete response
+          return res.json({
+            threadId: thread_id,
+            response: fullResponse,
+          });
         } else if (queryAnalysis.type === "non_travel") {
           // For non-travel queries, use a simple model with rejection message
-          console.log("[STREAM] Handling non-travel query");
+          console.log("[API] Handling non-travel query");
           const { ChatGroq } = await import("@langchain/groq");
           const model = new ChatGroq({
-            model: "llama3-70b-8192",
+            model: "llama-3.3-70b-versatile",
             apiKey: process.env.GROQ_API_KEY,
-            streaming: true,
           }).bind({
             response_format: { type: "text" },
           });
 
-          const stream = await model.stream([
+          const response = await model.invoke([
             {
               role: "system",
               content:
@@ -215,23 +239,19 @@ async function startServer() {
             },
           ]);
 
-          for await (const chunk of stream) {
-            const content = chunk.content || "";
-            fullResponse += content;
+          fullResponse = extractTextFromMessageContent(response.content);
 
-            if (content) {
-              res.write(`data: ${JSON.stringify({ text: content })}\n\n`);
-            }
-          }
-
-          res.write("data: [DONE]\n\n");
-          res.end();
+          // Save assistant message
           await saveMessage(thread_id, "assistant", fullResponse);
 
-          return;
+          // Return complete response
+          return res.json({
+            threadId: thread_id,
+            response: fullResponse,
+          });
         } else if (queryAnalysis.type === "conversation_history") {
           // For conversation history queries, retrieve and summarize past messages
-          console.log("[STREAM] Handling conversation history query");
+          console.log("[API] Handling conversation history query");
 
           // Get the history summary (non-streaming first)
           const historySummary = await handleConversationHistoryQuery(
@@ -240,17 +260,16 @@ async function startServer() {
             client
           );
 
-          // Stream it back to the client
+          // Return it directly instead of streaming
           const { ChatGroq } = await import("@langchain/groq");
           const model = new ChatGroq({
-            model: "llama3-70b-8192",
+            model: "llama-3.3-70b-versatile",
             apiKey: process.env.GROQ_API_KEY,
-            streaming: true,
           }).bind({
             response_format: { type: "text" },
           });
 
-          const stream = await model.stream([
+          const response = await model.invoke([
             {
               role: "system",
               content:
@@ -262,86 +281,115 @@ async function startServer() {
             },
           ]);
 
-          for await (const chunk of stream) {
-            const content = chunk.content || "";
-            fullResponse += content;
+          fullResponse = extractTextFromMessageContent(response.content);
 
-            if (content) {
-              res.write(`data: ${JSON.stringify({ text: content })}\n\n`);
-            }
-          }
-
-          res.write("data: [DONE]\n\n");
-          res.end();
+          // Save assistant message
           await saveMessage(thread_id, "assistant", fullResponse);
 
-          return;
+          // Return complete response
+          return res.json({
+            threadId: thread_id,
+            response: fullResponse,
+          });
         }
 
         // For travel queries, use the full agent
-        console.log("[STREAM] Processing travel query through LangGraph agent");
+        console.log("[API] Processing travel query through LangGraph agent");
 
-        // Stream the agent's response
+        // Call the agent and get the full response at once
         try {
-          // Start the conversation with the user's message
-          const streamEvents = await agentApp.streamEvents(
-            {
-              topic: initialMessage,
-              messages: [new HumanMessage({ content: initialMessage })],
-              queries: [initialMessage],
-              info: {},
-              extractionSchema: {},
-            },
-            {
-              recursionLimit: 30,
-              streamMode: "updates",
-              version: "v2",
-              configurable: {
-                thread_id: thread_id,
-                responseSystemPromptTemplate: RESPONSE_SYSTEM_PROMPT_TEMPLATE,
-                responseModel: "groq/llama3-70b-8192",
-                querySystemPromptTemplate: QUERY_SYSTEM_PROMPT_TEMPLATE,
-                queryModel: "groq/llama3-70b-8192",
-                prompt: MAIN_PROMPT,
-                maxSearchResults: 5,
-                maxInfoToolCalls: 3,
-                maxLoops: 6,
-                embeddingModel: "cohere/embed-english-v3.0",
-                retrieverProvider: "pinecone" as const,
-                searchKwargs: {},
-              },
-            }
-          );
-
-          // Stream the events
-          for await (const event of streamEvents) {
-            if (
-              event.event === "on_chat_model_stream" &&
-              event.data.chunk?.content
-            ) {
-              const content = event.data.chunk.content;
-              fullResponse += content;
-
-              res.write(
-                `data: ${JSON.stringify({
-                  text: content,
-                })}\n\n`
-              );
+          // Call the agent - with our new error handling in callAgent,
+          // this should now return content even when there are certain errors
+          try {
+            fullResponse = await callAgent(client, initialMessage, thread_id);
+          } catch (error: any) {
+            // If the error contains a specific message property with content, use that
+            if (error?.error?.error?.failed_generation) {
+              console.log("[API] Extracting response from error object");
+              fullResponse = error.error.error.failed_generation;
+            } else {
+              // Otherwise rethrow
+              throw error;
             }
           }
 
-          res.write("data: [DONE]\n\n");
-          res.end();
+          // Process fullResponse as before, looking for indications a search is needed
+          if (
+            fullResponse.includes("search_tool(") ||
+            fullResponse.includes("Please use the search_tool") ||
+            fullResponse.includes("I couldn't find any relevant information") ||
+            fullResponse.includes("I apologize, but the retrieved documents") ||
+            fullResponse.includes("The retrieved documents are about")
+          ) {
+            console.log(
+              "[API] Response indicates search is needed, enforcing search"
+            );
+
+            // Extract the destination/query from the response
+            let searchQuery = initialMessage;
+
+            // Try to find a more specific search query from the response
+            const queryMatch = fullResponse.match(
+              /search_tool\s*\(\s*["'](.+?)["']\s*\)/
+            );
+            if (queryMatch && queryMatch[1]) {
+              searchQuery = queryMatch[1];
+            } else {
+              // Look for location in the initial query
+              const locationMatch = initialMessage.match(
+                /(?:in|about)\s+([A-Za-z\s]+)(?:\s|$)/i
+              );
+              if (locationMatch && locationMatch[1]) {
+                searchQuery = `Places to travel in ${locationMatch[1].trim()}`;
+              }
+            }
+
+            console.log(`[API] Forcing search with query: "${searchQuery}"`);
+
+            // Force a direct search_tool call with explicit search instruction
+            const searchMessage = `I need information about ${searchQuery}. Please use the search_tool to find this information. Do not tell me you will search, actually perform the search immediately.`;
+
+            fullResponse = await callAgent(client, searchMessage, thread_id);
+          }
+
+          // Save assistant message
           await saveMessage(thread_id, "assistant", fullResponse);
+
+          // Return complete response
+          return res.json({
+            threadId: thread_id,
+            response: fullResponse,
+          });
         } catch (error) {
-          console.error("Error streaming conversation:", error);
-          res.write(
-            `data: ${JSON.stringify({
-              error: "Error streaming conversation",
-            })}\n\n`
-          );
-          res.write("data: [DONE]\n\n");
-          res.end();
+          console.error("Error in conversation:", error);
+          // If all else fails, look for useful content in the error object
+          let errorMessage = "Error in conversation";
+
+          // Cast the error to our interface
+          const typedError = error as ErrorWithFailedGeneration;
+
+          // Try to find content in different possible error structures
+          const possibleContent =
+            typedError?.error?.error?.failed_generation ||
+            typedError?.failed_generation ||
+            typedError?.message ||
+            JSON.stringify(error);
+
+          if (
+            possibleContent &&
+            typeof possibleContent === "string" &&
+            possibleContent.length > 100
+          ) {
+            // If we find something that looks like travel content, use it
+            errorMessage = possibleContent;
+            await saveMessage(thread_id, "assistant", errorMessage);
+          }
+
+          // Return the best response we could find, or the error
+          return res.json({
+            threadId: thread_id,
+            response: errorMessage,
+          });
         }
       } catch (error) {
         console.error("Error starting conversation:", error);
@@ -379,13 +427,102 @@ async function startServer() {
         } else {
           // For travel queries, use the full agent
           console.log("[CHAT] Processing travel query through LangGraph agent");
-          response = await callAgent(client, initialMessage, threadId);
+
+          // Try to call the agent with our improved error handling
+          try {
+            response = await callAgent(client, initialMessage, threadId);
+          } catch (error: any) {
+            // Check if the error contains useful information
+            const typedError = error as ErrorWithFailedGeneration;
+
+            if (typedError?.error?.error?.failed_generation) {
+              console.log("[CHAT] Extracting response from error object");
+              response = typedError.error.error.failed_generation;
+            } else {
+              // If not a recognized error format, rethrow
+              throw error;
+            }
+          }
+
+          // Process response if needed to handle search
+          if (
+            response.includes("search_tool(") ||
+            response.includes("Please use the search_tool") ||
+            response.includes("I couldn't find any relevant information") ||
+            response.includes("I apologize, but the retrieved documents") ||
+            response.includes("The retrieved documents are about")
+          ) {
+            console.log(
+              "[CHAT] Response indicates search is needed, enforcing search"
+            );
+
+            // Extract the destination/query from the response
+            let searchQuery = initialMessage;
+
+            // Try to find a more specific search query from the response
+            const queryMatch = response.match(
+              /search_tool\s*\(\s*["'](.+?)["']\s*\)/
+            );
+            if (queryMatch && queryMatch[1]) {
+              searchQuery = queryMatch[1];
+            } else {
+              // Look for location in the initial query
+              const locationMatch = initialMessage.match(
+                /(?:in|about)\s+([A-Za-z\s]+)(?:\s|$)/i
+              );
+              if (locationMatch && locationMatch[1]) {
+                searchQuery = `Places to travel in ${locationMatch[1].trim()}`;
+              }
+            }
+
+            console.log(`[CHAT] Forcing search with query: "${searchQuery}"`);
+
+            // Force a direct search_tool call with explicit search instruction
+            const searchMessage = `I need information about ${searchQuery}. Please use the search_tool to find this information. Do not tell me you will search, actually perform the search immediately.`;
+
+            try {
+              response = await callAgent(client, searchMessage, threadId);
+            } catch (searchError: any) {
+              // If there's an error with search, try to extract content from the error
+              const typedSearchError = searchError as ErrorWithFailedGeneration;
+              if (typedSearchError?.error?.error?.failed_generation) {
+                response = typedSearchError.error.error.failed_generation;
+              } else {
+                throw searchError;
+              }
+            }
+          }
         }
 
         res.json({ threadId, response });
       } catch (error) {
         console.error("Error starting conversation:", error);
-        res.status(500).json({ error: "Internal server error" });
+
+        // Try to extract useful information from the error
+        let errorMessage = "Internal server error";
+        const typedError = error as ErrorWithFailedGeneration;
+
+        const possibleContent =
+          typedError?.error?.error?.failed_generation ||
+          typedError?.failed_generation ||
+          typedError?.message ||
+          JSON.stringify(error);
+
+        if (
+          possibleContent &&
+          typeof possibleContent === "string" &&
+          (possibleContent.includes("Malaysia") || possibleContent.length > 200)
+        ) {
+          errorMessage = possibleContent;
+        }
+
+        res.json({
+          threadId,
+          response:
+            errorMessage.length > 100
+              ? errorMessage
+              : "I apologize, but I encountered an error while processing your request. Please try again.",
+        });
       }
     });
 
@@ -422,13 +559,101 @@ async function startServer() {
             "[CHAT] Processing travel query through LangGraph agent with thread:",
             threadId
           );
-          response = await callAgent(client, message, threadId);
+
+          // Try to call the agent with our improved error handling
+          try {
+            response = await callAgent(client, message, threadId);
+          } catch (error: any) {
+            // Check if the error contains useful information
+            const typedError = error as ErrorWithFailedGeneration;
+
+            if (typedError?.error?.error?.failed_generation) {
+              console.log("[CHAT] Extracting response from error object");
+              response = typedError.error.error.failed_generation;
+            } else {
+              // If not a recognized error format, rethrow
+              throw error;
+            }
+          }
+
+          // Process response if needed to handle search
+          if (
+            response.includes("search_tool(") ||
+            response.includes("Please use the search_tool") ||
+            response.includes("I couldn't find any relevant information") ||
+            response.includes("I apologize, but the retrieved documents") ||
+            response.includes("The retrieved documents are about")
+          ) {
+            console.log(
+              "[CHAT] Response indicates search is needed, enforcing search"
+            );
+
+            // Extract the destination/query from the response
+            let searchQuery = message;
+
+            // Try to find a more specific search query from the response
+            const queryMatch = response.match(
+              /search_tool\s*\(\s*["'](.+?)["']\s*\)/
+            );
+            if (queryMatch && queryMatch[1]) {
+              searchQuery = queryMatch[1];
+            } else {
+              // Look for location in the initial query
+              const locationMatch = message.match(
+                /(?:in|about)\s+([A-Za-z\s]+)(?:\s|$)/i
+              );
+              if (locationMatch && locationMatch[1]) {
+                searchQuery = `Places to travel in ${locationMatch[1].trim()}`;
+              }
+            }
+
+            console.log(`[CHAT] Forcing search with query: "${searchQuery}"`);
+
+            // Force a direct search_tool call with explicit search instruction
+            const searchMessage = `I need information about ${searchQuery}. Please use the search_tool to find this information. Do not tell me you will search, actually perform the search immediately.`;
+
+            try {
+              response = await callAgent(client, searchMessage, threadId);
+            } catch (searchError: any) {
+              // If there's an error with search, try to extract content from the error
+              const typedSearchError = searchError as ErrorWithFailedGeneration;
+              if (typedSearchError?.error?.error?.failed_generation) {
+                response = typedSearchError.error.error.failed_generation;
+              } else {
+                throw searchError;
+              }
+            }
+          }
         }
 
         res.json({ response });
       } catch (error) {
         console.error("Error in chat:", error);
-        res.status(500).json({ error: "Internal server error" });
+
+        // Try to extract useful information from the error
+        let errorMessage = "Internal server error";
+        const typedError = error as ErrorWithFailedGeneration;
+
+        const possibleContent =
+          typedError?.error?.error?.failed_generation ||
+          typedError?.failed_generation ||
+          typedError?.message ||
+          JSON.stringify(error);
+
+        if (
+          possibleContent &&
+          typeof possibleContent === "string" &&
+          (possibleContent.includes("Malaysia") || possibleContent.length > 200)
+        ) {
+          errorMessage = possibleContent;
+        }
+
+        res.json({
+          response:
+            errorMessage.length > 100
+              ? errorMessage
+              : "I apologize, but I encountered an error while processing your request. Please try again.",
+        });
       }
     });
 

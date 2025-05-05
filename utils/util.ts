@@ -24,12 +24,43 @@ export function getMessageText(msg: BaseMessage): string {
 
 export function formatDoc(doc: Document): string {
   const metadata = doc.metadata || {};
-  const meta = Object.entries(metadata)
-    .map(([k, v]) => ` ${k}=${v}`)
-    .join("");
-  const metaStr = meta ? ` ${meta}` : "";
 
-  return `<document${metaStr}>\n${doc.pageContent}\n</document>`;
+  // Normalize case for important fields
+  const name = metadata.name || metadata.Name || "";
+  const type = metadata.type || metadata.Type || "";
+  const city = metadata.city || metadata.City || "";
+  const state = metadata.state || metadata.State || "";
+  const country = metadata.country || metadata.Country || "";
+  const zone = metadata.zone || metadata.Zone || "";
+
+  // Create a highlighted header with important metadata
+  let header = "";
+  if (name) {
+    header += `NAME: ${name}\n`;
+  }
+  if (type) {
+    header += `TYPE: ${type}\n`;
+  }
+  if (city || state || country) {
+    header += `LOCATION: ${[city, state, country]
+      .filter(Boolean)
+      .join(", ")}\n`;
+  }
+  if (zone) {
+    header += `REGION: ${zone}\n`;
+  }
+
+  // Add header separator if we have any header content
+  if (header) {
+    header += "---\n";
+  }
+
+  // Include full metadata as attributes
+  const metaAttrs = Object.entries(metadata)
+    .map(([k, v]) => ` ${k}="${v}"`)
+    .join("");
+
+  return `<document${metaAttrs}>\n${header}${doc.pageContent}\n</document>`;
 }
 
 export function formatDocs(docs?: Document[]): string {

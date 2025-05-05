@@ -216,6 +216,7 @@ async function makePineconeRetriever(
     // Define getRelevantDocuments function
     const getRelevantDocuments = async (query: string): Promise<Document[]> => {
       console.log(`Querying with: "${query}"`);
+      const SCORE_THRESHOLD = 0.3;
 
       try {
         // Check if there's a state mentioned in the query
@@ -224,64 +225,117 @@ async function makePineconeRetriever(
           console.log(`Detected state in query: "${state}"`);
 
           try {
-            // Generate vector embedding for the query
-            const queryVector = await embeddings.embedQuery(query);
-
             // Try to do a hybrid search with state filter
             console.log(`Performing filtered search for state: "${state}"`);
-            const filterResults = await places.query({
-              vector: queryVector,
-              topK: k,
-              includeMetadata: true,
-              filter: {
-                State: { $eq: state },
+            const filterResults = await places.searchRecords({
+              query: {
+                topK: k,
+                inputs: {
+                  text: query,
+                },
+                filter: {
+                  State: { $eq: state },
+                },
               },
             });
 
-            if (filterResults.matches && filterResults.matches.length > 0) {
-              console.log(
-                `Found ${filterResults.matches.length} results with state filter`
+            console.log(
+              `Search results: ${JSON.stringify(
+                filterResults.result.hits?.length || 0
+              )} hits`
+            );
+
+            if (
+              filterResults.result.hits &&
+              filterResults.result.hits.length > 0
+            ) {
+              const relevantMatches = filterResults.result.hits.filter(
+                (match) =>
+                  match._score !== undefined && match._score >= SCORE_THRESHOLD
               );
 
-              // Convert to Document format
-              return filterResults.matches.map((match) => {
-                const metadata = match.metadata || {};
-                return new Document({
-                  pageContent: (metadata.text as string) || "",
-                  metadata: {
-                    id: match.id,
-                    score: match.score,
-                    ...convertMetadata(metadata),
-                  },
+              if (relevantMatches.length > 0) {
+                console.log(
+                  `Returning ${relevantMatches.length} relevant matches`
+                );
+                return relevantMatches.map((match) => {
+                  const metadata = match.fields || {};
+                  // Use type assertion to handle metadata properly
+                  const metadataObj = metadata as Record<string, any>;
+                  return new Document({
+                    pageContent: metadataObj.hasOwnProperty("text")
+                      ? String(metadataObj.text)
+                      : "",
+                    metadata: {
+                      id: match._id,
+                      score: match._score,
+                      ...convertMetadata(metadataObj),
+                    },
+                  });
                 });
-              });
-            } else {
-              console.log(
-                `No results found with state filter "${state}", using fallback`
-              );
+              } else {
+                console.log(
+                  `All matches below threshold (${SCORE_THRESHOLD}), returning empty`
+                );
+                return [];
+              }
             }
           } catch (filterError) {
             console.error("Error with filtered search:", filterError);
           }
         }
-      } catch (err) {
-        console.error("Error in state extraction:", err);
-      }
 
-      // If we didn't find results with filter, do regular search
-      console.log("Performing regular vector search as fallback");
-
-      // Create fallback retriever
-      const fallbackRetriever = vectorStore.asRetriever({ k });
-      const docs = await fallbackRetriever.getRelevantDocuments(query);
-
-      // Convert metadata formats
-      return docs.map((doc) => {
-        return new Document({
-          pageContent: doc.pageContent,
-          metadata: convertMetadata(doc.metadata),
+        // If no state detected or state search failed, do regular search
+        console.log("Performing regular vector search as fallback");
+        const searchResults = await places.searchRecords({
+          query: {
+            topK: k,
+            inputs: {
+              text: query,
+            },
+          },
         });
-      });
+
+        console.log(
+          `Regular search results: ${JSON.stringify(
+            searchResults.result.hits?.length || 0
+          )} hits`
+        );
+
+        if (searchResults.result.hits && searchResults.result.hits.length > 0) {
+          const relevantMatches = searchResults.result.hits.filter(
+            (match) =>
+              match._score !== undefined && match._score >= SCORE_THRESHOLD
+          );
+
+          if (relevantMatches.length > 0) {
+            console.log(
+              `Returning ${relevantMatches.length} relevant fallback matches`
+            );
+            return relevantMatches.map((match) => {
+              const metadata = match.fields || {};
+              // Use type assertion to handle metadata properly
+              const metadataObj = metadata as Record<string, any>;
+              return new Document({
+                pageContent: metadataObj.hasOwnProperty("text")
+                  ? String(metadataObj.text)
+                  : "",
+                metadata: {
+                  id: match._id,
+                  score: match._score,
+                  ...convertMetadata(metadataObj),
+                },
+              });
+            });
+          }
+        }
+
+        console.log("No relevant matches found, returning empty array");
+        return [];
+      } catch (err) {
+        console.error("Error in retrieval:", err);
+        return [];
+      }
     };
 
     // Return the retriever

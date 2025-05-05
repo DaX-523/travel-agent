@@ -87,14 +87,17 @@ async function seedPineconeDB() {
   }
   const pinecone = new Pinecone();
   const namespace = pinecone.index(indexName).namespace("places");
+  // await namespace.deleteAll();
   const records: PineconeTextRecord[] = [];
+  const embeddings = new CohereEmbeddings({ model: "embed-english-v3.0" });
 
+  console.log("1reading..");
   // Read CSV file
   fs.createReadStream("./data/Top Indian Places to Visit.csv")
     .pipe(csv())
     .on("data", (row) => {
       let EstablishmentYear: number | string;
-
+      console.log("2reading..");
       if (Number.isNaN(Number(row["Establishment Year"])))
         EstablishmentYear = row["Establishment Year"];
       else EstablishmentYear = Number(row["Establishment Year"]);
@@ -197,7 +200,6 @@ async function seedPineconeDB() {
           ? "budget travelers"
           : "those willing to invest in quality experiences"
       }.`;
-
       // Create the record with the format Pinecone expects
       records.push({
         _id: `place_${records.length + 1}`,
@@ -220,13 +222,98 @@ async function seedPineconeDB() {
       });
     })
     .on("end", async () => {
-      const BATCH_SIZE = Math.floor(records.length / 4);
-      const chunks = createChunks(records, BATCH_SIZE);
       console.log("CSV file successfully processed.");
-      for (const chunk of chunks) {
-        await namespace.upsertRecords(chunk);
+
+      // Process in smaller batches to avoid overwhelming the API
+      const BATCH_SIZE = 10; // Reduce batch size to avoid timeouts
+      const chunks = [];
+
+      // Create chunks of records
+      for (let i = 0; i < records.length; i += BATCH_SIZE) {
+        chunks.push(records.slice(i, i + BATCH_SIZE));
       }
-      console.log("Data successfully upserted into Pinecone.");
+
+      console.log(
+        `Created ${chunks.length} chunks of approx. ${BATCH_SIZE} records each`
+      );
+
+      // Process each chunk
+      for (let i = 0; i < chunks.length; i++) {
+        const chunk = chunks[i];
+        console.log(
+          `Processing chunk ${i + 1}/${chunks.length} (${chunk.length} records)`
+        );
+
+        try {
+          // Create vector embeddings for each record in the chunk
+          const recordsWithEmbeddings = await Promise.all(
+            chunk.map(async (record) => {
+              try {
+                // Create embedding for the text
+                const embedding = await embeddings.embedQuery(record.text);
+
+                // Return a simplified record structure
+                return {
+                  id: record._id,
+                  values: embedding,
+                  metadata: {
+                    text: record.text,
+                    Zone: record.Zone,
+                    State: record.State,
+                    City: record.City,
+                    Name: record.Name,
+                    Type: record.Type,
+                  },
+                };
+              } catch (err) {
+                console.error(
+                  `Error creating embedding for ${record.Name}:`,
+                  err
+                );
+                throw err;
+              }
+            })
+          );
+
+          // Use the REST API directly through fetch to bypass type issues
+          const apiKey = process.env.PINECONE_API_KEY || "";
+          const baseUrl =
+            process.env.PINECONE_BASE_URL || "https://api.pinecone.io";
+          const indexUrl = `${baseUrl}/vectors/upsert`;
+
+          const response = await fetch(indexUrl, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Api-Key": apiKey,
+            },
+            body: JSON.stringify({
+              namespace: "places",
+              index: indexName,
+              vectors: recordsWithEmbeddings,
+            }),
+          });
+
+          if (!response.ok) {
+            throw new Error(
+              `Pinecone API error: ${response.status} ${response.statusText}`
+            );
+          }
+
+          console.log(`Successfully upserted chunk ${i + 1}`);
+
+          // Wait a bit between batches to avoid rate limits
+          if (i < chunks.length - 1) {
+            console.log("Waiting before next batch...");
+            await new Promise((resolve) => setTimeout(resolve, 2000)); // Longer wait
+          }
+        } catch (error) {
+          console.error(`Error processing chunk ${i + 1}:`, error);
+          throw error;
+        }
+      }
+
+      console.log("All data successfully upserted into Pinecone.");
       console.log("Indexing....");
       await new Promise((resolve) => setTimeout(resolve, 5000));
       console.log("Data successfully indexed.");
@@ -234,5 +321,5 @@ async function seedPineconeDB() {
 }
 
 seedPineconeDB()
-  .then()
+  .then(() => console.log("success"))
   .catch((err) => console.error(err));
