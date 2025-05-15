@@ -1,26 +1,32 @@
 import "dotenv/config";
 import express, { Request, Response } from "express";
-import { MongoClient } from "mongodb";
+import { MongoClient, ObjectId } from "mongodb";
 import callAgent, { app as agentApp } from "./agent";
 import cors from "cors";
-import { HumanMessage } from "@langchain/core/messages";
+import bcrypt from "bcrypt";
+import jwt from "jsonwebtoken";
+import { authenticateToken } from "./middleware/auth";
 import {
   modelAnalyzeQuery,
   handleGreeting,
   handleNonTravelQuery,
   handleConversationHistoryQuery,
 } from "./utils/query-filter";
-import {
-  RESPONSE_SYSTEM_PROMPT_TEMPLATE,
-  QUERY_SYSTEM_PROMPT_TEMPLATE,
-  MAIN_PROMPT,
-} from "./utils/prompts";
 
 const app = express();
 app.use(express.json());
 app.use(cors());
 // Initialize MongoDB client
 const client = new MongoClient(process.env.MONGODB_ATLAS_URI as string);
+
+// Define user interface
+interface User {
+  _id?: ObjectId;
+  email: string;
+  password: string;
+  name: string;
+  createdAt: Date;
+}
 
 // Add this interface at the top of the file, after imports
 interface ErrorWithFailedGeneration {
@@ -72,6 +78,7 @@ async function startServer() {
     const db = client.db("AI-Travel-Agent");
     const messagesCollection = db.collection("messages");
     const threadsCollection = db.collection("threads");
+    const usersCollection = db.collection("users");
 
     // Middleware to ensure collections exist
     await db
@@ -80,12 +87,16 @@ async function startServer() {
     await db
       .createCollection("threads", {})
       .catch(() => console.log("Threads collection already exists"));
+    await db
+      .createCollection("users", {})
+      .catch(() => console.log("Users collection already exists"));
 
     // Helper function to save messages and update thread info
     async function saveMessage(
       threadId: string,
       role: "user" | "assistant",
-      content: string
+      content: string,
+      userId?: string
     ) {
       const timestamp = new Date();
 
@@ -95,6 +106,7 @@ async function startServer() {
         role,
         content,
         timestamp,
+        userId,
       });
 
       // Update or create thread info
@@ -105,6 +117,7 @@ async function startServer() {
             lastActivity: timestamp,
             lastMessage:
               content.substring(0, 100) + (content.length > 100 ? "..." : ""),
+            userId,
           },
           $setOnInsert: {
             threadId,
@@ -115,260 +128,563 @@ async function startServer() {
       );
     }
 
+    // Authentication Routes
+    app.post("/auth/register", async (req: Request, res: Response) => {
+      try {
+        const { email, password, name } = req.body;
+
+        // Validate input
+        if (!email || !password || !name) {
+          return res.status(400).json({
+            error:
+              "Missing required fields: email, password, and name are required",
+          });
+        }
+
+        // Check if email already exists
+        const existingUser = await usersCollection.findOne({ email });
+        if (existingUser) {
+          return res.status(409).json({ error: "Email already registered" });
+        }
+
+        // Hash password
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(password, salt);
+
+        // Create new user
+        const newUser: User = {
+          email,
+          password: hashedPassword,
+          name,
+          createdAt: new Date(),
+        };
+
+        // Insert user into database
+        const result = await usersCollection.insertOne(newUser);
+
+        // Generate JWT token
+        const token = jwt.sign(
+          { id: result.insertedId },
+          process.env.JWT_SECRET || "default_jwt_secret",
+          { expiresIn: "10h" }
+        );
+
+        // Return success response with token
+        res.status(201).json({
+          message: "User registered successfully",
+          token,
+          user: {
+            id: result.insertedId,
+            email,
+            name,
+          },
+        });
+      } catch (error) {
+        console.error("Registration error:", error);
+        res.status(500).json({ error: "Registration failed" });
+      }
+    });
+
+    app.post("/auth/login", async (req: Request, res: Response) => {
+      try {
+        const { email, password } = req.body;
+
+        // Validate input
+        if (!email || !password) {
+          return res.status(400).json({
+            error: "Missing required fields: email and password are required",
+          });
+        }
+
+        // Find user
+        const user = await usersCollection.findOne({ email });
+        if (!user) {
+          return res.status(401).json({ error: "Invalid credentials" });
+        }
+
+        // Verify password
+        const isPasswordValid = await bcrypt.compare(password, user.password);
+        if (!isPasswordValid) {
+          return res.status(401).json({ error: "Invalid credentials" });
+        }
+
+        // Generate JWT token
+        const token = jwt.sign(
+          { id: user._id },
+          process.env.JWT_SECRET || "default_jwt_secret",
+          { expiresIn: "10h" }
+        );
+
+        // Return success response with token
+        res.json({
+          message: "Login successful",
+          token,
+          user: {
+            id: user._id,
+            email: user.email,
+            name: user.name,
+          },
+        });
+      } catch (error) {
+        console.error("Login error:", error);
+        res.status(500).json({ error: "Login failed" });
+      }
+    });
+
+    // Protected route example
+    app.get(
+      "/auth/user",
+      authenticateToken,
+      async (req: Request, res: Response) => {
+        try {
+          const userId = (req as any).user.id;
+
+          // Get user data without password
+          const user = await usersCollection.findOne(
+            { _id: new ObjectId(userId) },
+            { projection: { password: 0 } }
+          );
+
+          if (!user) {
+            return res.status(404).json({ error: "User not found" });
+          }
+
+          res.json({ user });
+        } catch (error) {
+          console.error("Error fetching user data:", error);
+          res.status(500).json({ error: "Failed to fetch user data" });
+        }
+      }
+    );
+
     app.get("/", (req: Request, res: Response) => {
       res.send("LangGraph Agent Server");
     });
 
-    // New endpoint to get all threads
-    app.get("/threads", async (req: Request, res: Response) => {
-      try {
-        // Get all threads with most recent activity first
-        const threads = await threadsCollection
-          .find({})
-          .sort({ lastActivity: -1 })
-          .toArray();
-
-        res.json({ threads });
-      } catch (error) {
-        console.error("Error fetching threads:", error);
-        res.status(500).json({ error: "Failed to fetch threads" });
-      }
-    });
-
-    // New endpoint to get messages for a specific thread
-    app.get("/threads/:threadId", async (req: Request, res: Response) => {
-      const { threadId } = req.params;
-
-      try {
-        // Get thread info
-        const thread = await threadsCollection.findOne({ threadId });
-
-        if (!thread) {
-          return res.status(404).json({ error: "Thread not found" });
-        }
-
-        // Get messages for this thread
-        const messages = await messagesCollection
-          .find({ threadId })
-          .sort({ timestamp: 1 })
-          .toArray();
-
-        res.json({
-          thread,
-          messages,
-        });
-      } catch (error) {
-        console.error("Error fetching thread messages:", error);
-        res.status(500).json({ error: "Failed to fetch thread messages" });
-      }
-    });
-
-    app.post("/stream", async (req: Request, res: Response) => {
-      const initialMessage = req.body.prompt;
-      if (!initialMessage) {
-        res.status(400).json({ error: "No message provided" });
-        return;
-      }
-
-      try {
-        // Get the thread_id from the query parameters or create a new one
-        const thread_id = req.body.threadId || Date.now().toString();
-
-        // Save user message
-        await saveMessage(thread_id, "user", initialMessage);
-
-        // Use LLM-based query classification
-        const queryAnalysis = await modelAnalyzeQuery(initialMessage);
-        console.log("[API] Query analysis:", queryAnalysis);
-
-        let fullResponse = "";
-        // Handle different query types
-        if (queryAnalysis.type === "greeting") {
-          // For greetings, use a simple model response
-          console.log("[API] Handling greeting query");
-          const { ChatGroq } = await import("@langchain/groq");
-          const model = new ChatGroq({
-            model: "llama-3.3-70b-versatile",
-            apiKey: process.env.GROQ_API_KEY,
-          }).bind({
-            response_format: { type: "text" },
-          });
-
-          const response = await model.invoke([
-            {
-              role: "system",
-              content:
-                "You are a friendly travel assistant. For conversational greetings, respond naturally and briefly.",
-            },
-            {
-              role: "user",
-              content: initialMessage,
-            },
-          ]);
-
-          fullResponse = extractTextFromMessageContent(response.content);
-
-          // Save assistant message
-          await saveMessage(thread_id, "assistant", fullResponse);
-
-          // Return complete response
-          return res.json({
-            threadId: thread_id,
-            response: fullResponse,
-          });
-        } else if (queryAnalysis.type === "non_travel") {
-          // For non-travel queries, use a simple model with rejection message
-          console.log("[API] Handling non-travel query");
-          const { ChatGroq } = await import("@langchain/groq");
-          const model = new ChatGroq({
-            model: "llama-3.3-70b-versatile",
-            apiKey: process.env.GROQ_API_KEY,
-          }).bind({
-            response_format: { type: "text" },
-          });
-
-          const response = await model.invoke([
-            {
-              role: "system",
-              content:
-                "You are a friendly travel assistant. When users ask questions not related to travel, politely explain that you are specialized in travel assistance and can only provide information about destinations, accommodations, attractions, and travel planning.",
-            },
-            {
-              role: "user",
-              content: initialMessage,
-            },
-          ]);
-
-          fullResponse = extractTextFromMessageContent(response.content);
-
-          // Save assistant message
-          await saveMessage(thread_id, "assistant", fullResponse);
-
-          // Return complete response
-          return res.json({
-            threadId: thread_id,
-            response: fullResponse,
-          });
-        } else if (queryAnalysis.type === "conversation_history") {
-          // For conversation history queries, retrieve and summarize past messages
-          console.log("[API] Handling conversation history query");
-
-          // Get the history summary (non-streaming first)
-          const historySummary = await handleConversationHistoryQuery(
-            initialMessage,
-            thread_id,
-            client
-          );
-
-          // Return it directly instead of streaming
-          const { ChatGroq } = await import("@langchain/groq");
-          const model = new ChatGroq({
-            model: "llama-3.3-70b-versatile",
-            apiKey: process.env.GROQ_API_KEY,
-          }).bind({
-            response_format: { type: "text" },
-          });
-
-          const response = await model.invoke([
-            {
-              role: "system",
-              content:
-                "You are a helpful travel assistant providing information about past conversations.",
-            },
-            {
-              role: "user",
-              content: `Provide this exact text as your response: ${historySummary}`,
-            },
-          ]);
-
-          fullResponse = extractTextFromMessageContent(response.content);
-
-          // Save assistant message
-          await saveMessage(thread_id, "assistant", fullResponse);
-
-          // Return complete response
-          return res.json({
-            threadId: thread_id,
-            response: fullResponse,
-          });
-        }
-
-        // For travel queries, use the full agent
-        console.log("[API] Processing travel query through LangGraph agent");
-
-        // Call the agent and get the full response at once
+    // New endpoint to get all threads - protected with authentication
+    app.get(
+      "/threads",
+      authenticateToken,
+      async (req: Request, res: Response) => {
         try {
-          // Call the agent - with our new error handling in callAgent,
-          // this should now return content even when there are certain errors
-          try {
-            fullResponse = await callAgent(client, initialMessage, thread_id);
-          } catch (error: any) {
-            // If the error contains a specific message property with content, use that
-            if (error?.error?.error?.failed_generation) {
-              console.log("[API] Extracting response from error object");
-              fullResponse = error.error.error.failed_generation;
-            } else {
-              // Otherwise rethrow
-              throw error;
-            }
+          const userId = (req as any).user.id;
+
+          // Get only threads created by this user
+          const threads = await threadsCollection
+            .find({ userId })
+            .sort({ lastActivity: -1 })
+            .toArray();
+
+          res.json({ threads });
+        } catch (error) {
+          console.error("Error fetching threads:", error);
+          res.status(500).json({ error: "Failed to fetch threads" });
+        }
+      }
+    );
+
+    // New endpoint to get messages for a specific thread - protected with authentication
+    app.get(
+      "/threads/:threadId",
+      authenticateToken,
+      async (req: Request, res: Response) => {
+        const { threadId } = req.params;
+        const userId = (req as any).user.id;
+
+        try {
+          // Get thread info and verify ownership
+          const thread = await threadsCollection.findOne({ threadId });
+
+          if (!thread) {
+            return res.status(404).json({ error: "Thread not found" });
           }
 
-          // Process fullResponse as before, looking for indications a search is needed
-          if (
-            fullResponse.includes("search_tool(") ||
-            fullResponse.includes("Please use the search_tool") ||
-            fullResponse.includes("I couldn't find any relevant information") ||
-            fullResponse.includes("I apologize, but the retrieved documents") ||
-            fullResponse.includes("The retrieved documents are about")
-          ) {
-            console.log(
-              "[API] Response indicates search is needed, enforcing search"
+          // Check if this thread belongs to the requesting user
+          if (thread.userId && thread.userId !== userId) {
+            return res
+              .status(403)
+              .json({ error: "Access denied: You don't own this thread" });
+          }
+
+          // Get messages for this thread
+          const messages = await messagesCollection
+            .find({ threadId })
+            .sort({ timestamp: 1 })
+            .toArray();
+
+          res.json({
+            thread,
+            messages,
+          });
+        } catch (error) {
+          console.error("Error fetching thread messages:", error);
+          res.status(500).json({ error: "Failed to fetch thread messages" });
+        }
+      }
+    );
+
+    app.post(
+      "/stream",
+      authenticateToken,
+      async (req: Request, res: Response) => {
+        const initialMessage = req.body.prompt;
+        if (!initialMessage) {
+          res.status(400).json({ error: "No message provided" });
+          return;
+        }
+
+        try {
+          // Get userId from authenticated request
+          const userId = (req as any).user.id;
+
+          // Get the thread_id from the query parameters or create a new one
+          const thread_id = req.body.threadId || Date.now().toString();
+
+          // Save user message with userId
+          await saveMessage(thread_id, "user", initialMessage, userId);
+
+          // Use LLM-based query classification
+          const queryAnalysis = await modelAnalyzeQuery(initialMessage);
+          console.log("[API] Query analysis:", queryAnalysis);
+
+          let fullResponse = "";
+          // Handle different query types
+          if (queryAnalysis.type === "greeting") {
+            // For greetings, use a simple model response
+            console.log("[API] Handling greeting query");
+            const { ChatGroq } = await import("@langchain/groq");
+            const model = new ChatGroq({
+              model: "llama-3.3-70b-versatile",
+              apiKey: process.env.GROQ_API_KEY,
+            }).bind({
+              response_format: { type: "text" },
+            });
+
+            const response = await model.invoke([
+              {
+                role: "system",
+                content:
+                  "You are a friendly travel assistant. For conversational greetings, respond naturally and briefly.",
+              },
+              {
+                role: "user",
+                content: initialMessage,
+              },
+            ]);
+
+            fullResponse = extractTextFromMessageContent(response.content);
+
+            // Save assistant message with userId
+            await saveMessage(thread_id, "assistant", fullResponse, userId);
+
+            // Return complete response
+            return res.json({
+              threadId: thread_id,
+              response: fullResponse,
+            });
+          } else if (queryAnalysis.type === "non_travel") {
+            // For non-travel queries, use a simple model with rejection message
+            console.log("[API] Handling non-travel query");
+            const { ChatGroq } = await import("@langchain/groq");
+            const model = new ChatGroq({
+              model: "llama-3.3-70b-versatile",
+              apiKey: process.env.GROQ_API_KEY,
+            }).bind({
+              response_format: { type: "text" },
+            });
+
+            const response = await model.invoke([
+              {
+                role: "system",
+                content:
+                  "You are a friendly travel assistant. When users ask questions not related to travel, politely explain that you are specialized in travel assistance and can only provide information about destinations, accommodations, attractions, and travel planning.",
+              },
+              {
+                role: "user",
+                content: initialMessage,
+              },
+            ]);
+
+            fullResponse = extractTextFromMessageContent(response.content);
+
+            // Save assistant message with userId
+            await saveMessage(thread_id, "assistant", fullResponse, userId);
+
+            // Return complete response
+            return res.json({
+              threadId: thread_id,
+              response: fullResponse,
+            });
+          } else if (queryAnalysis.type === "conversation_history") {
+            // For conversation history queries, retrieve and summarize past messages
+            console.log("[API] Handling conversation history query");
+
+            // Get the history summary (non-streaming first)
+            const historySummary = await handleConversationHistoryQuery(
+              initialMessage,
+              thread_id,
+              client
             );
 
-            // Extract the destination/query from the response
-            let searchQuery = initialMessage;
+            // Return it directly instead of streaming
+            const { ChatGroq } = await import("@langchain/groq");
+            const model = new ChatGroq({
+              model: "llama-3.3-70b-versatile",
+              apiKey: process.env.GROQ_API_KEY,
+            }).bind({
+              response_format: { type: "text" },
+            });
 
-            // Try to find a more specific search query from the response
-            const queryMatch = fullResponse.match(
-              /search_tool\s*\(\s*["'](.+?)["']\s*\)/
-            );
-            if (queryMatch && queryMatch[1]) {
-              searchQuery = queryMatch[1];
-            } else {
-              // Look for location in the initial query
-              const locationMatch = initialMessage.match(
-                /(?:in|about)\s+([A-Za-z\s]+)(?:\s|$)/i
-              );
-              if (locationMatch && locationMatch[1]) {
-                searchQuery = `Places to travel in ${locationMatch[1].trim()}`;
+            const response = await model.invoke([
+              {
+                role: "system",
+                content:
+                  "You are a helpful travel assistant providing information about past conversations.",
+              },
+              {
+                role: "user",
+                content: `Provide this exact text as your response: ${historySummary}`,
+              },
+            ]);
+
+            fullResponse = extractTextFromMessageContent(response.content);
+
+            // Save assistant message with userId
+            await saveMessage(thread_id, "assistant", fullResponse, userId);
+
+            // Return complete response
+            return res.json({
+              threadId: thread_id,
+              response: fullResponse,
+            });
+          }
+
+          // For travel queries, use the full agent
+          console.log("[API] Processing travel query through LangGraph agent");
+
+          // Call the agent and get the full response at once
+          try {
+            // Call the agent - with our new error handling in callAgent,
+            // this should now return content even when there are certain errors
+            try {
+              fullResponse = await callAgent(client, initialMessage, thread_id);
+            } catch (error: any) {
+              // If the error contains a specific message property with content, use that
+              if (error?.error?.error?.failed_generation) {
+                console.log("[API] Extracting response from error object");
+                fullResponse = error.error.error.failed_generation;
+              } else {
+                // Otherwise rethrow
+                throw error;
               }
             }
 
-            console.log(`[API] Forcing search with query: "${searchQuery}"`);
+            // Process fullResponse as before, looking for indications a search is needed
+            if (
+              fullResponse.includes("search_tool(") ||
+              fullResponse.includes("Please use the search_tool") ||
+              fullResponse.includes(
+                "I couldn't find any relevant information"
+              ) ||
+              fullResponse.includes(
+                "I apologize, but the retrieved documents"
+              ) ||
+              fullResponse.includes("The retrieved documents are about")
+            ) {
+              console.log(
+                "[API] Response indicates search is needed, enforcing search"
+              );
 
-            // Force a direct search_tool call with explicit search instruction
-            const searchMessage = `I need information about ${searchQuery}. Please use the search_tool to find this information. Do not tell me you will search, actually perform the search immediately.`;
+              // Extract the destination/query from the response
+              let searchQuery = initialMessage;
 
-            fullResponse = await callAgent(client, searchMessage, thread_id);
+              // Try to find a more specific search query from the response
+              const queryMatch = fullResponse.match(
+                /search_tool\s*\(\s*["'](.+?)["']\s*\)/
+              );
+              if (queryMatch && queryMatch[1]) {
+                searchQuery = queryMatch[1];
+              } else {
+                // Look for location in the initial query
+                const locationMatch = initialMessage.match(
+                  /(?:in|about)\s+([A-Za-z\s]+)(?:\s|$)/i
+                );
+                if (locationMatch && locationMatch[1]) {
+                  searchQuery = `Places to travel in ${locationMatch[1].trim()}`;
+                }
+              }
+
+              console.log(`[API] Forcing search with query: "${searchQuery}"`);
+
+              // Force a direct search_tool call with explicit search instruction
+              const searchMessage = `I need information about ${searchQuery}. Please use the search_tool to find this information. Do not tell me you will search, actually perform the search immediately.`;
+
+              fullResponse = await callAgent(client, searchMessage, thread_id);
+            }
+
+            // Save assistant message with userId
+            await saveMessage(thread_id, "assistant", fullResponse, userId);
+
+            // Return complete response
+            return res.json({
+              threadId: thread_id,
+              response: fullResponse,
+            });
+          } catch (error) {
+            console.error("Error in conversation:", error);
+            // If all else fails, look for useful content in the error object
+            let errorMessage = "Error in conversation";
+
+            // Cast the error to our interface
+            const typedError = error as ErrorWithFailedGeneration;
+
+            // Try to find content in different possible error structures
+            const possibleContent =
+              typedError?.error?.error?.failed_generation ||
+              typedError?.failed_generation ||
+              typedError?.message ||
+              JSON.stringify(error);
+
+            if (
+              possibleContent &&
+              typeof possibleContent === "string" &&
+              possibleContent.length > 100
+            ) {
+              // If we find something that looks like travel content, use it
+              errorMessage = possibleContent;
+              await saveMessage(thread_id, "assistant", errorMessage, userId);
+            }
+
+            // Return the best response we could find, or the error
+            return res.json({
+              threadId: thread_id,
+              response: errorMessage,
+            });
+          }
+        } catch (error) {
+          console.error("Error starting conversation:", error);
+          res.status(500).json({ error: "Error starting conversation" });
+        }
+      }
+    );
+
+    //LEGACY APIS (NO STREAMING)
+    app.post(
+      "/v1/chat",
+      authenticateToken,
+      async (req: Request, res: Response) => {
+        const initialMessage = req.body.message;
+        const threadId = Date.now().toString();
+        const userId = (req as any).user.id;
+
+        if (!initialMessage)
+          return res.status(400).json({ message: "Error Bad Request" });
+        try {
+          // Use LLM-based query classification
+          const queryAnalysis = await modelAnalyzeQuery(initialMessage);
+          console.log("[CHAT] Query analysis:", queryAnalysis);
+
+          let response;
+
+          // Handle different query types
+          if (queryAnalysis.type === "greeting") {
+            console.log("[CHAT] Handling greeting query");
+            response = await handleGreeting(initialMessage);
+          } else if (queryAnalysis.type === "non_travel") {
+            console.log("[CHAT] Handling non-travel query");
+            response = await handleNonTravelQuery(initialMessage);
+          } else if (queryAnalysis.type === "conversation_history") {
+            console.log("[CHAT] Handling conversation history query");
+            response = await handleConversationHistoryQuery(
+              initialMessage,
+              threadId,
+              client
+            );
+          } else {
+            // For travel queries, use the full agent
+            console.log(
+              "[CHAT] Processing travel query through LangGraph agent"
+            );
+
+            // Try to call the agent with our improved error handling
+            try {
+              response = await callAgent(client, initialMessage, threadId);
+            } catch (error: any) {
+              // Check if the error contains useful information
+              const typedError = error as ErrorWithFailedGeneration;
+
+              if (typedError?.error?.error?.failed_generation) {
+                console.log("[CHAT] Extracting response from error object");
+                response = typedError.error.error.failed_generation;
+              } else {
+                // If not a recognized error format, rethrow
+                throw error;
+              }
+            }
+
+            // Process response if needed to handle search
+            if (
+              response.includes("search_tool(") ||
+              response.includes("Please use the search_tool") ||
+              response.includes("I couldn't find any relevant information") ||
+              response.includes("I apologize, but the retrieved documents") ||
+              response.includes("The retrieved documents are about")
+            ) {
+              console.log(
+                "[CHAT] Response indicates search is needed, enforcing search"
+              );
+
+              // Extract the destination/query from the response
+              let searchQuery = initialMessage;
+
+              // Try to find a more specific search query from the response
+              const queryMatch = response.match(
+                /search_tool\s*\(\s*["'](.+?)["']\s*\)/
+              );
+              if (queryMatch && queryMatch[1]) {
+                searchQuery = queryMatch[1];
+              } else {
+                // Look for location in the initial query
+                const locationMatch = initialMessage.match(
+                  /(?:in|about)\s+([A-Za-z\s]+)(?:\s|$)/i
+                );
+                if (locationMatch && locationMatch[1]) {
+                  searchQuery = `Places to travel in ${locationMatch[1].trim()}`;
+                }
+              }
+
+              console.log(`[CHAT] Forcing search with query: "${searchQuery}"`);
+
+              // Force a direct search_tool call with explicit search instruction
+              const searchMessage = `I need information about ${searchQuery}. Please use the search_tool to find this information. Do not tell me you will search, actually perform the search immediately.`;
+
+              try {
+                response = await callAgent(client, searchMessage, threadId);
+              } catch (searchError: any) {
+                // If there's an error with search, try to extract content from the error
+                const typedSearchError =
+                  searchError as ErrorWithFailedGeneration;
+                if (typedSearchError?.error?.error?.failed_generation) {
+                  response = typedSearchError.error.error.failed_generation;
+                } else {
+                  throw searchError;
+                }
+              }
+            }
           }
 
-          // Save assistant message
-          await saveMessage(thread_id, "assistant", fullResponse);
+          // Save the messages for future reference
+          await saveMessage(threadId, "user", initialMessage, userId);
+          await saveMessage(threadId, "assistant", response, userId);
 
-          // Return complete response
-          return res.json({
-            threadId: thread_id,
-            response: fullResponse,
-          });
+          res.json({ threadId, response });
         } catch (error) {
-          console.error("Error in conversation:", error);
-          // If all else fails, look for useful content in the error object
-          let errorMessage = "Error in conversation";
+          console.error("Error starting conversation:", error);
 
-          // Cast the error to our interface
+          // Try to extract useful information from the error
+          let errorMessage = "Internal server error";
           const typedError = error as ErrorWithFailedGeneration;
 
-          // Try to find content in different possible error structures
           const possibleContent =
             typedError?.error?.error?.failed_generation ||
             typedError?.failed_generation ||
@@ -378,284 +694,173 @@ async function startServer() {
           if (
             possibleContent &&
             typeof possibleContent === "string" &&
-            possibleContent.length > 100
+            (possibleContent.includes("Malaysia") ||
+              possibleContent.length > 200)
           ) {
-            // If we find something that looks like travel content, use it
             errorMessage = possibleContent;
-            await saveMessage(thread_id, "assistant", errorMessage);
           }
 
-          // Return the best response we could find, or the error
-          return res.json({
-            threadId: thread_id,
-            response: errorMessage,
+          res.json({
+            threadId,
+            response:
+              errorMessage.length > 100
+                ? errorMessage
+                : "I apologize, but I encountered an error while processing your request. Please try again.",
           });
         }
-      } catch (error) {
-        console.error("Error starting conversation:", error);
-        res.status(500).json({ error: "Error starting conversation" });
       }
-    });
+    );
 
-    //LEGACY APIS (NO STREAMING)
-    app.post("/v1/chat", async (req: Request, res: Response) => {
-      const initialMessage = req.body.message;
-      const threadId = Date.now().toString();
-      if (!initialMessage)
-        return res.status(400).json({ message: "Error Bad Request" });
-      try {
-        // Use LLM-based query classification
-        const queryAnalysis = await modelAnalyzeQuery(initialMessage);
-        console.log("[CHAT] Query analysis:", queryAnalysis);
+    app.post(
+      "/v1/chat/:threadId",
+      authenticateToken,
+      async (req: Request, res: Response) => {
+        const { threadId } = req.params;
+        const { message } = req.body;
+        const userId = (req as any).user.id;
 
-        let response;
+        if (!message)
+          return res.status(400).json({ message: "Error Bad Request" });
 
-        // Handle different query types
-        if (queryAnalysis.type === "greeting") {
-          console.log("[CHAT] Handling greeting query");
-          response = await handleGreeting(initialMessage);
-        } else if (queryAnalysis.type === "non_travel") {
-          console.log("[CHAT] Handling non-travel query");
-          response = await handleNonTravelQuery(initialMessage);
-        } else if (queryAnalysis.type === "conversation_history") {
-          console.log("[CHAT] Handling conversation history query");
-          response = await handleConversationHistoryQuery(
-            initialMessage,
-            threadId,
-            client
-          );
-        } else {
-          // For travel queries, use the full agent
-          console.log("[CHAT] Processing travel query through LangGraph agent");
-
-          // Try to call the agent with our improved error handling
-          try {
-            response = await callAgent(client, initialMessage, threadId);
-          } catch (error: any) {
-            // Check if the error contains useful information
-            const typedError = error as ErrorWithFailedGeneration;
-
-            if (typedError?.error?.error?.failed_generation) {
-              console.log("[CHAT] Extracting response from error object");
-              response = typedError.error.error.failed_generation;
-            } else {
-              // If not a recognized error format, rethrow
-              throw error;
-            }
+        try {
+          // Verify the thread belongs to this user
+          const thread = await threadsCollection.findOne({ threadId });
+          if (thread && thread.userId && thread.userId !== userId) {
+            return res
+              .status(403)
+              .json({ error: "Access denied: You don't own this thread" });
           }
 
-          // Process response if needed to handle search
-          if (
-            response.includes("search_tool(") ||
-            response.includes("Please use the search_tool") ||
-            response.includes("I couldn't find any relevant information") ||
-            response.includes("I apologize, but the retrieved documents") ||
-            response.includes("The retrieved documents are about")
-          ) {
+          // Use LLM-based query classification
+          const queryAnalysis = await modelAnalyzeQuery(message);
+          console.log("[CHAT] Thread query analysis:", queryAnalysis);
+
+          let response;
+
+          // Handle different query types
+          if (queryAnalysis.type === "greeting") {
+            console.log("[CHAT] Handling greeting query in thread");
+            response = await handleGreeting(message);
+          } else if (queryAnalysis.type === "non_travel") {
+            console.log("[CHAT] Handling non-travel query in thread");
+            response = await handleNonTravelQuery(message);
+          } else if (queryAnalysis.type === "conversation_history") {
+            console.log("[CHAT] Handling conversation history query in thread");
+            response = await handleConversationHistoryQuery(
+              message,
+              threadId,
+              client
+            );
+          } else {
+            // For travel queries, use the full agent with the existing thread
             console.log(
-              "[CHAT] Response indicates search is needed, enforcing search"
+              "[CHAT] Processing travel query through LangGraph agent with thread:",
+              threadId
             );
 
-            // Extract the destination/query from the response
-            let searchQuery = initialMessage;
-
-            // Try to find a more specific search query from the response
-            const queryMatch = response.match(
-              /search_tool\s*\(\s*["'](.+?)["']\s*\)/
-            );
-            if (queryMatch && queryMatch[1]) {
-              searchQuery = queryMatch[1];
-            } else {
-              // Look for location in the initial query
-              const locationMatch = initialMessage.match(
-                /(?:in|about)\s+([A-Za-z\s]+)(?:\s|$)/i
-              );
-              if (locationMatch && locationMatch[1]) {
-                searchQuery = `Places to travel in ${locationMatch[1].trim()}`;
-              }
-            }
-
-            console.log(`[CHAT] Forcing search with query: "${searchQuery}"`);
-
-            // Force a direct search_tool call with explicit search instruction
-            const searchMessage = `I need information about ${searchQuery}. Please use the search_tool to find this information. Do not tell me you will search, actually perform the search immediately.`;
-
+            // Try to call the agent with our improved error handling
             try {
-              response = await callAgent(client, searchMessage, threadId);
-            } catch (searchError: any) {
-              // If there's an error with search, try to extract content from the error
-              const typedSearchError = searchError as ErrorWithFailedGeneration;
-              if (typedSearchError?.error?.error?.failed_generation) {
-                response = typedSearchError.error.error.failed_generation;
+              response = await callAgent(client, message, threadId);
+            } catch (error: any) {
+              // Check if the error contains useful information
+              const typedError = error as ErrorWithFailedGeneration;
+
+              if (typedError?.error?.error?.failed_generation) {
+                console.log("[CHAT] Extracting response from error object");
+                response = typedError.error.error.failed_generation;
               } else {
-                throw searchError;
+                // If not a recognized error format, rethrow
+                throw error;
+              }
+            }
+
+            // Process response if needed to handle search
+            if (
+              response.includes("search_tool(") ||
+              response.includes("Please use the search_tool") ||
+              response.includes("I couldn't find any relevant information") ||
+              response.includes("I apologize, but the retrieved documents") ||
+              response.includes("The retrieved documents are about")
+            ) {
+              console.log(
+                "[CHAT] Response indicates search is needed, enforcing search"
+              );
+
+              // Extract the destination/query from the response
+              let searchQuery = message;
+
+              // Try to find a more specific search query from the response
+              const queryMatch = response.match(
+                /search_tool\s*\(\s*["'](.+?)["']\s*\)/
+              );
+              if (queryMatch && queryMatch[1]) {
+                searchQuery = queryMatch[1];
+              } else {
+                // Look for location in the initial query
+                const locationMatch = message.match(
+                  /(?:in|about)\s+([A-Za-z\s]+)(?:\s|$)/i
+                );
+                if (locationMatch && locationMatch[1]) {
+                  searchQuery = `Places to travel in ${locationMatch[1].trim()}`;
+                }
+              }
+
+              console.log(`[CHAT] Forcing search with query: "${searchQuery}"`);
+
+              // Force a direct search_tool call with explicit search instruction
+              const searchMessage = `I need information about ${searchQuery}. Please use the search_tool to find this information. Do not tell me you will search, actually perform the search immediately.`;
+
+              try {
+                response = await callAgent(client, searchMessage, threadId);
+              } catch (searchError: any) {
+                // If there's an error with search, try to extract content from the error
+                const typedSearchError =
+                  searchError as ErrorWithFailedGeneration;
+                if (typedSearchError?.error?.error?.failed_generation) {
+                  response = typedSearchError.error.error.failed_generation;
+                } else {
+                  throw searchError;
+                }
               }
             }
           }
-        }
 
-        res.json({ threadId, response });
-      } catch (error) {
-        console.error("Error starting conversation:", error);
+          // Save the messages for future reference
+          await saveMessage(threadId, "user", message, userId);
+          await saveMessage(threadId, "assistant", response, userId);
 
-        // Try to extract useful information from the error
-        let errorMessage = "Internal server error";
-        const typedError = error as ErrorWithFailedGeneration;
+          res.json({ response });
+        } catch (error) {
+          console.error("Error in chat:", error);
 
-        const possibleContent =
-          typedError?.error?.error?.failed_generation ||
-          typedError?.failed_generation ||
-          typedError?.message ||
-          JSON.stringify(error);
+          // Try to extract useful information from the error
+          let errorMessage = "Internal server error";
+          const typedError = error as ErrorWithFailedGeneration;
 
-        if (
-          possibleContent &&
-          typeof possibleContent === "string" &&
-          (possibleContent.includes("Malaysia") || possibleContent.length > 200)
-        ) {
-          errorMessage = possibleContent;
-        }
+          const possibleContent =
+            typedError?.error?.error?.failed_generation ||
+            typedError?.failed_generation ||
+            typedError?.message ||
+            JSON.stringify(error);
 
-        res.json({
-          threadId,
-          response:
-            errorMessage.length > 100
-              ? errorMessage
-              : "I apologize, but I encountered an error while processing your request. Please try again.",
-        });
-      }
-    });
-
-    app.post("/v1/chat/:threadId", async (req: Request, res: Response) => {
-      const { threadId } = req.params;
-      const { message } = req.body;
-      if (!message)
-        return res.status(400).json({ message: "Error Bad Request" });
-
-      try {
-        // Use LLM-based query classification
-        const queryAnalysis = await modelAnalyzeQuery(message);
-        console.log("[CHAT] Thread query analysis:", queryAnalysis);
-
-        let response;
-
-        // Handle different query types
-        if (queryAnalysis.type === "greeting") {
-          console.log("[CHAT] Handling greeting query in thread");
-          response = await handleGreeting(message);
-        } else if (queryAnalysis.type === "non_travel") {
-          console.log("[CHAT] Handling non-travel query in thread");
-          response = await handleNonTravelQuery(message);
-        } else if (queryAnalysis.type === "conversation_history") {
-          console.log("[CHAT] Handling conversation history query in thread");
-          response = await handleConversationHistoryQuery(
-            message,
-            threadId,
-            client
-          );
-        } else {
-          // For travel queries, use the full agent with the existing thread
-          console.log(
-            "[CHAT] Processing travel query through LangGraph agent with thread:",
-            threadId
-          );
-
-          // Try to call the agent with our improved error handling
-          try {
-            response = await callAgent(client, message, threadId);
-          } catch (error: any) {
-            // Check if the error contains useful information
-            const typedError = error as ErrorWithFailedGeneration;
-
-            if (typedError?.error?.error?.failed_generation) {
-              console.log("[CHAT] Extracting response from error object");
-              response = typedError.error.error.failed_generation;
-            } else {
-              // If not a recognized error format, rethrow
-              throw error;
-            }
-          }
-
-          // Process response if needed to handle search
           if (
-            response.includes("search_tool(") ||
-            response.includes("Please use the search_tool") ||
-            response.includes("I couldn't find any relevant information") ||
-            response.includes("I apologize, but the retrieved documents") ||
-            response.includes("The retrieved documents are about")
+            possibleContent &&
+            typeof possibleContent === "string" &&
+            (possibleContent.includes("Malaysia") ||
+              possibleContent.length > 200)
           ) {
-            console.log(
-              "[CHAT] Response indicates search is needed, enforcing search"
-            );
-
-            // Extract the destination/query from the response
-            let searchQuery = message;
-
-            // Try to find a more specific search query from the response
-            const queryMatch = response.match(
-              /search_tool\s*\(\s*["'](.+?)["']\s*\)/
-            );
-            if (queryMatch && queryMatch[1]) {
-              searchQuery = queryMatch[1];
-            } else {
-              // Look for location in the initial query
-              const locationMatch = message.match(
-                /(?:in|about)\s+([A-Za-z\s]+)(?:\s|$)/i
-              );
-              if (locationMatch && locationMatch[1]) {
-                searchQuery = `Places to travel in ${locationMatch[1].trim()}`;
-              }
-            }
-
-            console.log(`[CHAT] Forcing search with query: "${searchQuery}"`);
-
-            // Force a direct search_tool call with explicit search instruction
-            const searchMessage = `I need information about ${searchQuery}. Please use the search_tool to find this information. Do not tell me you will search, actually perform the search immediately.`;
-
-            try {
-              response = await callAgent(client, searchMessage, threadId);
-            } catch (searchError: any) {
-              // If there's an error with search, try to extract content from the error
-              const typedSearchError = searchError as ErrorWithFailedGeneration;
-              if (typedSearchError?.error?.error?.failed_generation) {
-                response = typedSearchError.error.error.failed_generation;
-              } else {
-                throw searchError;
-              }
-            }
+            errorMessage = possibleContent;
           }
+
+          res.json({
+            response:
+              errorMessage.length > 100
+                ? errorMessage
+                : "I apologize, but I encountered an error while processing your request. Please try again.",
+          });
         }
-
-        res.json({ response });
-      } catch (error) {
-        console.error("Error in chat:", error);
-
-        // Try to extract useful information from the error
-        let errorMessage = "Internal server error";
-        const typedError = error as ErrorWithFailedGeneration;
-
-        const possibleContent =
-          typedError?.error?.error?.failed_generation ||
-          typedError?.failed_generation ||
-          typedError?.message ||
-          JSON.stringify(error);
-
-        if (
-          possibleContent &&
-          typeof possibleContent === "string" &&
-          (possibleContent.includes("Malaysia") || possibleContent.length > 200)
-        ) {
-          errorMessage = possibleContent;
-        }
-
-        res.json({
-          response:
-            errorMessage.length > 100
-              ? errorMessage
-              : "I apologize, but I encountered an error while processing your request. Please try again.",
-        });
       }
-    });
+    );
 
     const PORT = process.env.PORT || 3002;
     app.listen(PORT, () => {
