@@ -21,8 +21,8 @@ A sophisticated travel recommendation and planning backend system powered by AI 
 - 🔧 **TypeScript**: Strongly typed JavaScript for robust backend development
 - 📦 **Express.js**: Web server framework for handling HTTP requests
 - 🗄️ **MongoDB Atlas**: Cloud database for storing application data
-- 🔍 **MongoDB Atlas Vector Search**: Vector database for semantic search capabilities
 - 📊 **Pinecone**: Vector database for efficient similarity search
+- 🔍 **Pinecone Vector Search**: Vector database for semantic search capabilities
 - 🤖 **LangChain**: Framework for building LLM applications
 - 🔗 **LangGraph.js**: Framework for building complex AI agent workflows
 - 🔐 **JWT (JSON Web Tokens)**: For secure user authentication
